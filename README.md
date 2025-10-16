@@ -1,5 +1,8 @@
+# Deep conf branching 
+(**Process of being researched**) Current interest
+Im currently investigating how if pruning higher confidences chain-of-thought branches improves performance in DeepConf experiemnents
 
-<div align="center">
+div align="center">
     <div>
         <img src="images/deepconf.png" width="500px" alt="Deep Think with Confidence Logo"/>
     </div>
