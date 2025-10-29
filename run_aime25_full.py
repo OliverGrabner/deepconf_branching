@@ -1,13 +1,13 @@
 """
 Full AIME 2025 Evaluation Script
 Evaluates on complete AIME 2025-I and AIME 2025-II datasets (30 problems total)
-Uses DeepSeek-R1-Distill-Qwen-8B model with optimized settings
+Uses DeepSeek-R1-Distill-Qwen-7B model with optimized settings
 
 Hardware Configuration:
     - 4x NVIDIA RTX 5000 Ada (32GB VRAM each)
     - Total VRAM: 128GB
-    - Model: DeepSeek-R1-Distill-Qwen-8B (~8B parameters)
-    - Tensor Parallelism: 2 GPUs (8B model doesn't need all 4)
+    - Model: DeepSeek-R1-Distill-Qwen-7B (~7B parameters)
+    - Tensor Parallelism: 2 GPUs (7B model doesn't need all 4)
 
 Dataset:
     - Source: opencompass/AIME2025 from HuggingFace
@@ -67,12 +67,12 @@ def load_aime25_dataset(subset: Optional[str] = None) -> List[Dict]:
     try:
         # Load from opencompass/AIME2025
         if subset:
-            dataset = load_dataset("opencompass/AIME2025", split=subset)
+            dataset = load_dataset("opencompass/AIME2025", name=subset, split="train")
             print(f"  Loaded {len(dataset)} problems from {subset}")
         else:
             # Load both subsets
-            dataset_i = load_dataset("opencompass/AIME2025", split="AIME2025-I")
-            dataset_ii = load_dataset("opencompass/AIME2025", split="AIME2025-II")
+            dataset_i = load_dataset("opencompass/AIME2025", name="AIME2025-I", split="train")
+            dataset_ii = load_dataset("opencompass/AIME2025", name="AIME2025-II", split="train")
             dataset = list(dataset_i) + list(dataset_ii)
             print(f"  Loaded {len(dataset_i)} problems from AIME2025-I")
             print(f"  Loaded {len(dataset_ii)} problems from AIME2025-II")
@@ -465,7 +465,7 @@ def main():
     parser = argparse.ArgumentParser(description='AIME 2025 Full Evaluation')
     parser.add_argument('--mode', type=str, choices=['standard', 'branching'], required=True,
                        help='Evaluation mode')
-    parser.add_argument('--model', type=str, default='deepseek-ai/DeepSeek-R1-Distill-Qwen-8B',
+    parser.add_argument('--model', type=str, default='deepseek-ai/DeepSeek-R1-Distill-Qwen-7B',
                        help='Model to use')
     parser.add_argument('--budget', type=int, default=8,
                        help='Number of traces for standard mode')
@@ -474,7 +474,7 @@ def main():
     parser.add_argument('--max_total_branches', type=int, default=6,
                        help='Max total branches for branching mode')
     parser.add_argument('--tensor_parallel_size', type=int, default=2,
-                       help='Number of GPUs for tensor parallelism (default: 2 for 8B model)')
+                       help='Number of GPUs for tensor parallelism (default: 2 for 7B model)')
     parser.add_argument('--subset', type=str, choices=['AIME2025-I', 'AIME2025-II'], default=None,
                        help='Run only on specific subset')
     parser.add_argument('--output_dir', type=str, default='results/aime25_full',
@@ -570,7 +570,8 @@ def main():
     print(f"  Correct traces: {total_correct}/{total_traces}")
     print(f"  Accuracy: {overall_accuracy:.1f}%")
     print(f"  Total tokens: {total_tokens:,}")
-    print(f"  Avg tokens/problem: {total_tokens/len(results):,.0f}")
+    if len(results) > 0:
+        print(f"  Avg tokens/problem: {total_tokens/len(results):,.0f}")
 
     # Per-subset breakdown
     subset_results = {}
