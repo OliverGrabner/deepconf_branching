@@ -3,9 +3,24 @@ Manual AIME 2025 Evaluation Script
 Run on 3 sample problems with both branching and standard modes
 Shows detailed correlation analysis for each question
 
+Hardware Configuration:
+    - 4x NVIDIA RTX 5000 Ada (32GB VRAM each)
+    - Total VRAM: 128GB
+    - Model: DeepSeek-R1-Distill-Qwen-32B (~32B parameters)
+    - Tensor Parallelism: 4 GPUs (default)
+
 Usage:
-    python run_aime25_manual.py --mode branching
+    # Standard mode with default 32B model on 4 GPUs
     python run_aime25_manual.py --mode standard
+
+    # Branching mode with default settings
+    python run_aime25_manual.py --mode branching
+
+    # Custom tensor parallelism (if using fewer GPUs)
+    python run_aime25_manual.py --mode standard --tensor_parallel_size 2
+
+    # Specific problems only
+    python run_aime25_manual.py --mode branching --problem_ids I-1 I-2
 """
 import re
 import os
@@ -178,7 +193,7 @@ def calculate_confidence_correlation(traces: List[Dict], ground_truth: str) -> D
 # 4. Main evaluation functions
 ########################################
 
-def run_standard_eval(problem: Dict, model: str, budget: int) -> Dict:
+def run_standard_eval(problem: Dict, model: str, budget: int, tensor_parallel_size: int = 1) -> Dict:
     """Run standard DeepConf evaluation (no branching)"""
     print(f"\n{'='*80}")
     print(f"STANDARD MODE: {problem['problem_id']}")
@@ -188,7 +203,8 @@ def run_standard_eval(problem: Dict, model: str, budget: int) -> Dict:
     deep_llm = DeepThinkLLM(
         model=model,
         enable_prefix_caching=True,
-        trust_remote_code=True
+        trust_remote_code=True,
+        tensor_parallel_size=tensor_parallel_size
     )
 
     # Prepare prompt
@@ -259,7 +275,7 @@ def run_standard_eval(problem: Dict, model: str, budget: int) -> Dict:
     }
 
 
-def run_branching_eval(problem: Dict, model: str, initial: int, max_total: int) -> Dict:
+def run_branching_eval(problem: Dict, model: str, initial: int, max_total: int, tensor_parallel_size: int = 1) -> Dict:
     """Run branching DeepConf evaluation"""
     print(f"\n{'='*80}")
     print(f"BRANCHING MODE: {problem['problem_id']}")
@@ -269,7 +285,8 @@ def run_branching_eval(problem: Dict, model: str, initial: int, max_total: int) 
     branching_llm = BranchingDeepThinkLLM(
         model=model,
         enable_prefix_caching=True,
-        trust_remote_code=True
+        trust_remote_code=True,
+        tensor_parallel_size=tensor_parallel_size
     )
 
     # Prepare prompt
@@ -371,10 +388,13 @@ def run_branching_eval(problem: Dict, model: str, initial: int, max_total: int) 
 ########################################
 
 def main():
+    # Configure GPU environment for 4x RTX 5000 Ada (32GB each, 128GB total)
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
+
     parser = argparse.ArgumentParser(description='AIME 2025 Manual Evaluation')
     parser.add_argument('--mode', type=str, choices=['standard', 'branching'], required=True,
                        help='Evaluation mode')
-    parser.add_argument('--model', type=str, default='deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B',
+    parser.add_argument('--model', type=str, default='deepseek-ai/DeepSeek-R1-Distill-Qwen-32B',
                        help='Model to use')
     parser.add_argument('--budget', type=int, default=8,
                        help='Number of traces for standard mode')
@@ -382,6 +402,8 @@ def main():
                        help='Initial branches for branching mode')
     parser.add_argument('--max_total_branches', type=int, default=6,
                        help='Max total branches for branching mode')
+    parser.add_argument('--tensor_parallel_size', type=int, default=4,
+                       help='Number of GPUs for tensor parallelism (default: 4 for 4x RTX 5000 Ada)')
     parser.add_argument('--output_dir', type=str, default='results/aime25_manual',
                        help='Output directory')
     parser.add_argument('--problem_ids', type=str, nargs='+', default=None,
@@ -412,11 +434,12 @@ def main():
 
         try:
             if args.mode == 'standard':
-                result = run_standard_eval(problem, args.model, args.budget)
+                result = run_standard_eval(problem, args.model, args.budget, args.tensor_parallel_size)
             else:  # branching
                 result = run_branching_eval(
                     problem, args.model,
-                    args.initial_branches, args.max_total_branches
+                    args.initial_branches, args.max_total_branches,
+                    args.tensor_parallel_size
                 )
 
             results.append(result)
