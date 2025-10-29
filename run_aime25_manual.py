@@ -199,12 +199,15 @@ def run_standard_eval(problem: Dict, model: str, budget: int, tensor_parallel_si
     print(f"STANDARD MODE: {problem['problem_id']}")
     print(f"{'='*80}")
 
-    # Initialize
+    # Initialize with memory-optimized settings for 32B model
     deep_llm = DeepThinkLLM(
         model=model,
         enable_prefix_caching=True,
         trust_remote_code=True,
-        tensor_parallel_size=tensor_parallel_size
+        tensor_parallel_size=tensor_parallel_size,
+        gpu_memory_utilization=0.85,  # Leave 15% headroom (~4.8GB per GPU)
+        max_num_seqs=32,               # Reduce warm-up batch size from 256
+        max_model_len=4096             # Limit context window (budget=4000 tokens)
     )
 
     # Prepare prompt
@@ -281,12 +284,15 @@ def run_branching_eval(problem: Dict, model: str, initial: int, max_total: int, 
     print(f"BRANCHING MODE: {problem['problem_id']}")
     print(f"{'='*80}")
 
-    # Initialize
+    # Initialize with memory-optimized settings for 32B model
     branching_llm = BranchingDeepThinkLLM(
         model=model,
         enable_prefix_caching=True,
         trust_remote_code=True,
-        tensor_parallel_size=tensor_parallel_size
+        tensor_parallel_size=tensor_parallel_size,
+        gpu_memory_utilization=0.85,  # Leave 15% headroom (~4.8GB per GPU)
+        max_num_seqs=32,               # Reduce warm-up batch size from 256
+        max_model_len=4096             # Limit context window (budget=4000 tokens)
     )
 
     # Prepare prompt
