@@ -215,9 +215,10 @@ class BranchingDeepThinkLLM:
         sampling_params: SamplingParams
     ) -> DeepThinkOutput:
         """
-        Simulate branching by analyzing partial generations and spawning new ones.
-        
-        This is a simplified version that generates traces in rounds.
+        Perform true branching by continuing from high-confidence states using prefix caching.
+
+        This implementation uses actual branch points and vLLM's prefix caching to efficiently
+        generate alternative continuations from high-confidence states.
         """
         processing_start = time.time()
         
@@ -276,43 +277,90 @@ class BranchingDeepThinkLLM:
             all_traces, confidence_threshold, window_size
         )
         
-        # Round 2: Generate branches from high-confidence points
+        # Round 2: Generate branches from high-confidence points using prefix caching
         if branch_candidates and trace_counter < max_total_branches:
             num_branches = min(len(branch_candidates), max_total_branches - trace_counter)
             print(f"\nIdentified {len(branch_candidates)} branching opportunities")
-            print(f"Generating {num_branches} branch traces...")
-            
-            # For simplicity, we'll just generate new full traces with different seeds
-            # In a real implementation, we'd use prefix caching to continue from branch points
+            print(f"Generating {num_branches} branch traces with prefix caching...")
+
+            # Use TRUE prefix-based branching
+            branch_prompts = []
             branch_params_list = []
-            
+            branch_metadata = []
+
             for i, candidate in enumerate(branch_candidates[:num_branches]):
+                # Find parent trace
+                parent_trace = None
+                for trace in all_traces:
+                    if trace['trace_id'] == candidate['parent_trace_id']:
+                        parent_trace = trace
+                        break
+
+                if parent_trace is None:
+                    continue
+
+                # Extract tokens up to branch point
+                branch_point = candidate['peak_position']
+                if 'token_ids' in parent_trace and parent_trace['token_ids']:
+                    # Use token IDs for exact prefix
+                    prefix_tokens = parent_trace['token_ids'][:branch_point]
+                    prefix_text = self.tokenizer.decode(prefix_tokens, skip_special_tokens=False)
+                else:
+                    # Fallback to character-based slicing
+                    prefix_text = candidate.get('text_up_to_peak', parent_trace.get('text', '')[:branch_point])
+
+                branch_prompts.append(prefix_text)
+
+                # Create sampling params with unique seed for diversity
                 params = copy.deepcopy(sampling_params)
                 params.logprobs = 20
-                # Use a seed influenced by the parent trace and branch point
-                params.seed = base_seed + 1000 + i + candidate['confidence_peak'] * 1000
+                params.seed = base_seed + 1000 + i
                 branch_params_list.append(params)
-            
-            branch_outputs = self.llm.generate(
-                [prompt for _ in range(num_branches)], 
-                branch_params_list
-            )
-            
-            # Process branch results
-            branch_results = process_batch_results_offline(branch_outputs, window_size)
-            
-            for i, trace in enumerate(branch_results['traces'][:num_branches]):
-                trace['trace_id'] = f"trace_{trace_counter}"
-                trace['parent_id'] = branch_candidates[i]['parent_trace_id']
-                trace['depth'] = 1
-                trace['branch_history'] = [{
-                    'step': branch_candidates[i]['peak_position'],
-                    'confidence': branch_candidates[i]['confidence_peak'],
-                    'parent_trace': branch_candidates[i]['parent_trace_id']
-                }]
-                all_traces.append(trace)
-                total_tokens += trace['num_tokens']
-                trace_counter += 1
+
+                # Store metadata for later processing
+                branch_metadata.append({
+                    'parent_id': candidate['parent_trace_id'],
+                    'branch_point': branch_point,
+                    'confidence_peak': candidate['confidence_peak'],
+                    'parent_depth': parent_trace.get('depth', 0),
+                    'prefix_length': len(prefix_tokens) if 'token_ids' in parent_trace else branch_point
+                })
+
+            if branch_prompts:
+                print(f"  Using prefix caching for {len(branch_prompts)} branches")
+                print(f"  Average prefix length: {np.mean([m['prefix_length'] for m in branch_metadata]):.0f} tokens")
+
+                # Generate branches - vLLM will automatically cache common prefixes!
+                branch_outputs = self.llm.generate(branch_prompts, branch_params_list)
+
+                # Process branch results
+                branch_results = process_batch_results_offline(branch_outputs, window_size)
+
+                for i, trace in enumerate(branch_results['traces']):
+                    if i >= len(branch_metadata):
+                        break
+
+                    metadata = branch_metadata[i]
+
+                    trace['trace_id'] = f"trace_{trace_counter}"
+                    trace['parent_id'] = metadata['parent_id']
+                    trace['depth'] = metadata['parent_depth'] + 1
+                    trace['branch_point'] = metadata['branch_point']
+                    trace['prefix_length'] = metadata['prefix_length']
+                    trace['branch_history'] = [{
+                        'step': metadata['branch_point'],
+                        'confidence': metadata['confidence_peak'],
+                        'parent_trace': metadata['parent_id']
+                    }]
+
+                    all_traces.append(trace)
+                    # Only count NEW tokens (excluding prefix)
+                    new_tokens = trace['num_tokens'] - metadata['prefix_length']
+                    total_tokens += max(0, new_tokens)
+                    trace_counter += 1
+
+                print(f"  Generated {trace_counter - initial_branches} branch traces")
+                print(f"  Saved ~{sum(m['prefix_length'] for m in branch_metadata)} tokens via prefix caching")
         
         # Store results
         output.all_traces = all_traces
