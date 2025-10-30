@@ -121,18 +121,18 @@ class ConfidenceBranchingProcessor:
         self,
         output_ids: list[int],
         logits: torch.Tensor,
-    ) -> Tuple[torch.Tensor, Optional[Dict[str, Any]]]:
+    ) -> torch.Tensor:
         """
         Process logits and decide on branching.
-        
+
         Returns:
-            (processed_logits, branch_info)
+            processed_logits (unmodified since we don't alter the distribution)
         """
         self.step_count += 1
-        
+
         # Compute confidence for current token
         new_conf = self.compute_conf(logits)
-        
+
         # Update sliding window
         if len(self.conf_group_list) < self.conf_group_size:
             self.conf_group_list.append(new_conf)
@@ -141,14 +141,13 @@ class ConfidenceBranchingProcessor:
             self.conf_grouped -= self.conf_group_list[0]
             self.conf_group_list.append(new_conf)
             self.conf_grouped += new_conf
-        
+
         # Calculate average confidence
         avg_confidence = self.conf_grouped / len(self.conf_group_list) if self.conf_group_list else 0
-        
+
         # Decide on branching
         should_branch, branch_prob = self.should_branch(avg_confidence)
-        
-        branch_info = None
+
         if should_branch:
             branch_info = {
                 'step': self.step_count,
@@ -158,9 +157,9 @@ class ConfidenceBranchingProcessor:
                 'branch_count': self.branch_count
             }
             self.branch_requests.append(branch_info)
-        
-        # Return unmodified logits and branch info
-        return logits, branch_info
+
+        # Return unmodified logits (vLLM expects only the tensor)
+        return logits
 
 
 class WrappedBranchingProcessor(AdapterLogitsProcessor):
