@@ -1,13 +1,13 @@
 """
 Full AIME 2025 Evaluation Script
 Evaluates on complete AIME 2025-I and AIME 2025-II datasets (30 problems total)
-Uses DeepSeek-R1-Distill-Qwen-7B model with optimized settings
+Uses DeepSeek-R1-Distill-Qwen-32B model with optimized settings
 
 Hardware Configuration:
     - 4x NVIDIA RTX 5000 Ada (32GB VRAM each)
     - Total VRAM: 128GB
-    - Model: DeepSeek-R1-Distill-Qwen-7B (~7B parameters)
-    - Tensor Parallelism: 2 GPUs (7B model doesn't need all 4)
+    - Model: DeepSeek-R1-Distill-Qwen-32B (~32B parameters)
+    - Tensor Parallelism: 4 GPUs (32B model uses all 4)
 
 Dataset:
     - Source: opencompass/AIME2025 from HuggingFace
@@ -232,15 +232,15 @@ def run_standard_eval(problem: Dict, model: str, budget: int, tensor_parallel_si
     print(f"STANDARD MODE: {problem['problem_id']} ({problem['source']})")
     print(f"{'='*80}")
 
-    # Initialize with optimized settings for 8B model
+    # Initialize with optimized settings for 32B model
     deep_llm = DeepThinkLLM(
         model=model,
         enable_prefix_caching=True,
         trust_remote_code=True,
         tensor_parallel_size=tensor_parallel_size,
-        gpu_memory_utilization=0.90,  # 8B model can use more memory
-        max_num_seqs=64,               # Can handle more parallel sequences
-        max_model_len=8192             # Larger context for complex problems
+        gpu_memory_utilization=0.85,  # 32B needs more headroom (~4.8GB per GPU)
+        max_num_seqs=32,               # Reduce for larger model
+        max_model_len=4096             # Match budget of 4000 tokens
     )
 
     # Prepare prompt
@@ -319,15 +319,15 @@ def run_branching_eval(problem: Dict, model: str, initial: int, max_total: int, 
     print(f"BRANCHING MODE: {problem['problem_id']} ({problem['source']})")
     print(f"{'='*80}")
 
-    # Initialize with optimized settings for 8B model
+    # Initialize with optimized settings for 32B model
     branching_llm = BranchingDeepThinkLLM(
         model=model,
         enable_prefix_caching=True,
         trust_remote_code=True,
         tensor_parallel_size=tensor_parallel_size,
-        gpu_memory_utilization=0.90,  # 8B model can use more memory
-        max_num_seqs=64,               # Can handle more parallel sequences
-        max_model_len=8192             # Larger context for complex problems
+        gpu_memory_utilization=0.85,  # 32B needs more headroom (~4.8GB per GPU)
+        max_num_seqs=32,               # Reduce for larger model
+        max_model_len=4096             # Match budget of 4000 tokens
     )
 
     # Prepare prompt
@@ -459,13 +459,13 @@ def load_checkpoint(checkpoint_path: str) -> Optional[Dict]:
 ########################################
 
 def main():
-    # Configure GPU environment for 4x RTX 5000 Ada (using only 2 for 8B model)
+    # Configure GPU environment for 4x RTX 5000 Ada (32GB each, 128GB total)
     os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
 
     parser = argparse.ArgumentParser(description='AIME 2025 Full Evaluation')
     parser.add_argument('--mode', type=str, choices=['standard', 'branching'], required=True,
                        help='Evaluation mode')
-    parser.add_argument('--model', type=str, default='deepseek-ai/DeepSeek-R1-Distill-Qwen-7B',
+    parser.add_argument('--model', type=str, default='deepseek-ai/DeepSeek-R1-Distill-Qwen-32B',
                        help='Model to use')
     parser.add_argument('--budget', type=int, default=8,
                        help='Number of traces for standard mode')
@@ -473,8 +473,8 @@ def main():
                        help='Initial branches for branching mode')
     parser.add_argument('--max_total_branches', type=int, default=6,
                        help='Max total branches for branching mode')
-    parser.add_argument('--tensor_parallel_size', type=int, default=2,
-                       help='Number of GPUs for tensor parallelism (default: 2 for 7B model)')
+    parser.add_argument('--tensor_parallel_size', type=int, default=4,
+                       help='Number of GPUs for tensor parallelism (default: 4 for 32B model)')
     parser.add_argument('--subset', type=str, choices=['AIME2025-I', 'AIME2025-II'], default=None,
                        help='Run only on specific subset')
     parser.add_argument('--output_dir', type=str, default='results/aime25_full',
