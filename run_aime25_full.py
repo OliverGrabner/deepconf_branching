@@ -64,57 +64,43 @@ def load_aime25_dataset(subset: Optional[str] = None) -> List[Dict]:
     """
     print("Loading AIME 2025 dataset from HuggingFace...")
 
-    try:
-        # Load from opencompass/AIME2025
-        if subset:
-            dataset = load_dataset("opencompass/AIME2025", name=subset, split="train")
-            print(f"  Loaded {len(dataset)} problems from {subset}")
+    # Load from opencompass/AIME2025 (uses 'test' split, not 'train')
+    if subset:
+        dataset = load_dataset("opencompass/AIME2025", name=subset, split="test")
+        print(f"  Loaded {len(dataset)} problems from {subset}")
+    else:
+        # Load both subsets
+        dataset_i = load_dataset("opencompass/AIME2025", name="AIME2025-I", split="test")
+        dataset_ii = load_dataset("opencompass/AIME2025", name="AIME2025-II", split="test")
+        dataset = list(dataset_i) + list(dataset_ii)
+        print(f"  Loaded {len(dataset_i)} problems from AIME2025-I")
+        print(f"  Loaded {len(dataset_ii)} problems from AIME2025-II")
+        print(f"  Total: {len(dataset)} problems")
+
+    # Convert to standard format
+    problems = []
+    for idx, item in enumerate(dataset):
+        # Determine problem ID
+        if idx < 15:
+            problem_id = f"I-{idx + 1}"
+            source = "AIME2025-I"
         else:
-            # Load both subsets
-            dataset_i = load_dataset("opencompass/AIME2025", name="AIME2025-I", split="train")
-            dataset_ii = load_dataset("opencompass/AIME2025", name="AIME2025-II", split="train")
-            dataset = list(dataset_i) + list(dataset_ii)
-            print(f"  Loaded {len(dataset_i)} problems from AIME2025-I")
-            print(f"  Loaded {len(dataset_ii)} problems from AIME2025-II")
-            print(f"  Total: {len(dataset)} problems")
+            problem_id = f"II-{idx - 14}"
+            source = "AIME2025-II"
 
-        # Convert to standard format
-        problems = []
-        for idx, item in enumerate(dataset):
-            # Determine problem ID
-            if idx < 15:
-                problem_id = f"I-{idx + 1}"
-                source = "AIME2025-I"
-            else:
-                problem_id = f"II-{idx - 14}"
-                source = "AIME2025-II"
+        # Format question with boxed instruction
+        question = item['question'].strip()
+        if not question.endswith("\\boxed"):
+            question += "\nMark your solution with \\boxed\nAnswer:"
 
-            # Format question with boxed instruction
-            question = item['question'].strip()
-            if not question.endswith("\\boxed"):
-                question += "\nMark your solution with \\boxed\nAnswer:"
+        problems.append({
+            'problem_id': problem_id,
+            'source': source,
+            'question': question,
+            'expected_answer': str(item['answer']).strip()
+        })
 
-            problems.append({
-                'problem_id': problem_id,
-                'source': source,
-                'question': question,
-                'expected_answer': str(item['answer']).strip()
-            })
-
-        return problems
-
-    except Exception as e:
-        print(f"ERROR loading dataset: {e}")
-        print("Falling back to manual subset...")
-        # Fallback to a minimal dataset for testing
-        return [
-            {
-                'problem_id': 'TEST-1',
-                'source': 'FALLBACK',
-                'question': 'What is 2 + 2?\nMark your solution with \\boxed\nAnswer:',
-                'expected_answer': '4'
-            }
-        ]
+    return problems
 
 
 ########################################
@@ -467,11 +453,11 @@ def main():
                        help='Evaluation mode')
     parser.add_argument('--model', type=str, default='deepseek-ai/DeepSeek-R1-Distill-Qwen-32B',
                        help='Model to use')
-    parser.add_argument('--budget', type=int, default=8,
+    parser.add_argument('--budget', type=int, default=16,
                        help='Number of traces for standard mode')
-    parser.add_argument('--initial_branches', type=int, default=2,
+    parser.add_argument('--initial_branches', type=int, default=4,
                        help='Initial branches for branching mode')
-    parser.add_argument('--max_total_branches', type=int, default=6,
+    parser.add_argument('--max_total_branches', type=int, default=16,
                        help='Max total branches for branching mode')
     parser.add_argument('--tensor_parallel_size', type=int, default=4,
                        help='Number of GPUs for tensor parallelism (default: 4 for 32B model)')
