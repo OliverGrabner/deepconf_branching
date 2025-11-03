@@ -57,7 +57,12 @@ class DeepThinkOutput:
     
     # Configuration used
     config: Dict[str, Any] = field(default_factory=dict)
-    
+
+    # Branching-specific information (for branching mode)
+    branch_events: List[Dict[str, Any]] = field(default_factory=list)
+    branch_genealogy: Dict[str, Any] = field(default_factory=dict)
+    branching_config: Dict[str, Any] = field(default_factory=dict)
+
     # Metadata
     mode: str = "offline"
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -114,6 +119,11 @@ class DeepThinkOutput:
             "config": self.config,
             "mode": self.mode,
             "timestamp": self.timestamp,
+
+            # Branching information (if applicable)
+            "branch_events": self.branch_events,
+            "branch_genealogy": self.branch_genealogy,
+            "branching_config": self.branching_config,
         }
     
     def print_summary(self):
@@ -126,6 +136,13 @@ class DeepThinkOutput:
             print(f"Final traces: {len(self.final_traces)}")
             if self.conf_bar is not None:
                 print(f"Confidence threshold: {self.conf_bar:.3f}")
+        elif self.mode == "branching":
+            print(f"Generated traces: {self.total_traces_count}")
+            if self.branch_genealogy:
+                stats = self.branch_genealogy.get('statistics', {})
+                print(f"Original traces: {stats.get('original_traces', 0)}")
+                print(f"Branched traces: {stats.get('branched_traces', 0)}")
+                print(f"Total branch events: {stats.get('total_branch_events', 0)}")
         else:
             print(f"Generated traces: {self.total_traces_count}")
         

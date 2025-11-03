@@ -15,9 +15,10 @@ import copy
 
 from .outputs import DeepThinkOutput
 from .utils import (
-    process_batch_results, process_batch_results_offline, 
-    weighted_majority_vote, compute_all_voting_results
+    process_batch_results, process_batch_results_offline,
+    weighted_majority_vote, compute_all_voting_results, compute_confidence
 )
+from .branching import BranchingManager, TraceState
 
 
 
@@ -74,8 +75,15 @@ class DeepThinkLLM:
         warmup_traces: int = 16,
         total_budget: int = 256,
         confidence_percentile: int = 90,
-        # Offline mode parameters  
+        # Offline mode parameters
         budget: int = 512,
+        # Branching mode parameters
+        start_traces: int = 8,
+        max_traces: int = 32,
+        selected_percent: float = 0.60,
+        n_iterations: int = 10,
+        branch_goal: float = 0.75,
+        average_tokens: int = 8000,
         # Common parameters
         window_size: int = 2048,
         sampling_params: Optional[SamplingParams] = None,
@@ -85,18 +93,24 @@ class DeepThinkLLM:
     ) -> DeepThinkOutput:
         """
         Perform deep thinking on a prompt
-        
+
         Args:
             prompt: Input prompt (prepared string)
-            mode: "online" for confidence-based early stopping, "offline" for batch generation
+            mode: "online" for confidence-based early stopping, "offline" for batch generation, "branching" for dynamic branching
             warmup_traces: Number of warmup traces for online mode
             total_budget: Total budget for online mode
             confidence_percentile: Percentile for confidence threshold in online mode
             budget: Number of traces for offline mode
+            start_traces: Initial traces for branching mode
+            max_traces: Maximum traces for branching mode
+            selected_percent: Top % eligible for branching (branching mode)
+            n_iterations: Number of branching check points (branching mode)
+            branch_goal: Target completion % for branching (branching mode)
+            average_tokens: Historical average tokens (branching mode)
             window_size: Window size for confidence computation
             sampling_params: Custom vLLM sampling parameters
             compute_multiple_voting: Whether to compute multiple voting method results
-            
+
         Returns:
             DeepThinkOutput containing results
         """
@@ -123,8 +137,23 @@ class DeepThinkLLM:
                 "confidence_percentile": confidence_percentile,
             })
             result = self._deepthink_online(
-                prompt, output, 
+                prompt, output,
                 warmup_traces, total_budget, confidence_percentile,
+                window_size, sampling_params
+            )
+        elif mode == "branching":
+            output.config.update({
+                "start_traces": start_traces,
+                "max_traces": max_traces,
+                "selected_percent": selected_percent,
+                "n_iterations": n_iterations,
+                "branch_goal": branch_goal,
+                "average_tokens": average_tokens,
+            })
+            result = self._deepthink_branching(
+                prompt, output,
+                start_traces, max_traces, selected_percent,
+                n_iterations, branch_goal, average_tokens,
                 window_size, sampling_params
             )
         else:
@@ -309,3 +338,225 @@ class DeepThinkLLM:
         print(f'Basic voting candidates: {len(voting_answers)}')
         if voting_answers:
             print(f'Sample voting answers: {voting_answers[:5]}')
+
+    def _deepthink_branching(
+        self,
+        prompt: str,
+        output: DeepThinkOutput,
+        start_traces: int,
+        max_traces: int,
+        selected_percent: float,
+        n_iterations: int,
+        branch_goal: float,
+        average_tokens: int,
+        window_size: int,
+        sampling_params: Optional[SamplingParams]
+    ) -> DeepThinkOutput:
+        """Branching self-consistency - dynamic trace branching during generation"""
+
+        processing_start = time.time()
+
+        # Initialize branching manager
+        manager = BranchingManager(
+            start_traces=start_traces,
+            max_traces=max_traces,
+            selected_percent=selected_percent,
+            n_iterations=n_iterations,
+            branch_goal=branch_goal,
+            average_tokens=average_tokens,
+            tail_window=window_size
+        )
+
+        # Store branching config in output
+        output.branching_config = {
+            'start_traces': start_traces,
+            'max_traces': max_traces,
+            'selected_percent': selected_percent,
+            'n_iterations': n_iterations,
+            'branch_goal': branch_goal,
+            'average_tokens': average_tokens,
+            'stride': manager.stride,
+            'branch_deadline_tokens': manager.branch_deadline_tokens
+        }
+
+        # Initialize starting traces
+        manager.initialize_traces(start_traces)
+
+        # Prepare initial prompts (all identical at start)
+        active_prompts = [prompt] * start_traces
+
+        print(f"\nStarting branching generation with {start_traces} traces...")
+        generation_start = time.time()
+
+        # Generation loop - iterate until branching deadline
+        for iteration in range(n_iterations):
+            manager.print_status()
+
+            # Generate next chunk (stride tokens) for all active traces
+            chunk_params = copy.deepcopy(sampling_params)
+            chunk_params.n = 1  # Generate 1 completion per prompt
+            chunk_params.max_tokens = manager.stride
+
+            print(f"  Generating {manager.stride} tokens for {len(active_prompts)} traces...")
+            chunk_start = time.time()
+
+            # Generate for all prompts in batch
+            batch_results = []
+            for i, single_prompt in enumerate(active_prompts):
+                result = self.llm.generate([single_prompt], chunk_params)
+                batch_results.append(result[0])  # Get first (and only) RequestOutput
+
+            chunk_time = time.time() - chunk_start
+            print(f"  Chunk generation took {chunk_time:.2f}s")
+
+            # Update trace states with new generations
+            for i, (trace, result) in enumerate(zip(manager.active_traces, batch_results)):
+                if len(result.outputs) > 0:
+                    gen_output = result.outputs[0]
+
+                    # Append new text
+                    new_text = gen_output.text
+                    trace.current_text += new_text
+
+                    # Append new token IDs
+                    if gen_output.token_ids:
+                        trace.current_token_ids.extend(gen_output.token_ids)
+
+                    # Compute and append confidences
+                    if gen_output.logprobs:
+                        new_confs = compute_confidence(gen_output.logprobs)
+                        trace.current_confs.extend(new_confs)
+
+                    # Update prompt for next iteration
+                    active_prompts[i] = prompt + trace.current_text
+
+                    # Check if complete
+                    if gen_output.finish_reason and gen_output.finish_reason != 'length':
+                        trace.is_complete = True
+
+            # Decide whether to branch
+            if manager.should_branch():
+                print(f"  Evaluating branching candidates...")
+
+                # Select candidates based on tail confidence
+                candidates = manager.select_branch_candidates()
+                print(f"    Top {selected_percent*100:.0f}% candidates: {len(candidates)}")
+
+                # Select which traces to branch
+                branches_to_create = manager.select_branches_to_create(candidates)
+
+                if branches_to_create:
+                    print(f"    Creating {len(branches_to_create)} new branches...")
+
+                    # Create new branches
+                    new_traces = manager.create_branches(
+                        parent_indices=branches_to_create,
+                        timestamp=time.time()
+                    )
+
+                    # Add corresponding prompts for new branches
+                    trace_map = {t.trace_idx: t for t in manager.active_traces}
+                    for new_trace in new_traces:
+                        # New branch starts with parent's current text
+                        branch_prompt = prompt + new_trace.current_text
+                        active_prompts.append(branch_prompt)
+
+                    print(f"    Total active traces: {len(manager.active_traces)}")
+            else:
+                if len(manager.active_traces) >= max_traces:
+                    print(f"  Max traces reached ({max_traces}), no more branching")
+                else:
+                    print(f"  Past branching deadline, no more branching")
+
+            # Advance to next iteration
+            manager.advance_iteration()
+
+        # Continue generation until completion (no more branching)
+        print(f"\nBranching phase complete. Continuing generation to completion...")
+        print(f"  {len(active_prompts)} traces generating...")
+
+        # Generate until max_tokens for all remaining traces
+        final_params = copy.deepcopy(sampling_params)
+        final_params.n = 1
+        final_params.max_tokens = sampling_params.max_tokens - manager.stride * n_iterations
+
+        final_results = []
+        for i, single_prompt in enumerate(active_prompts):
+            result = self.llm.generate([single_prompt], final_params)
+            final_results.append(result[0])
+
+        # Update traces with final generation
+        from .utils import extract_answer
+
+        for i, (trace, result) in enumerate(zip(manager.active_traces, final_results)):
+            if len(result.outputs) > 0:
+                gen_output = result.outputs[0]
+
+                # Append final text
+                trace.current_text += gen_output.text
+
+                # Append final token IDs
+                if gen_output.token_ids:
+                    trace.current_token_ids.extend(gen_output.token_ids)
+
+                # Append final confidences
+                if gen_output.logprobs:
+                    new_confs = compute_confidence(gen_output.logprobs)
+                    trace.current_confs.extend(new_confs)
+
+                trace.is_complete = True
+
+        output.generation_time = time.time() - generation_start
+
+        # Convert TraceState objects to trace dictionaries for output
+        all_traces = []
+        total_tokens = 0
+
+        for trace in manager.active_traces:
+            extracted_answer = extract_answer(trace.current_text)
+
+            trace_dict = {
+                'trace_idx': trace.trace_idx,
+                'parent_idx': trace.parent_idx,
+                'text': trace.current_text,
+                'token_ids': trace.current_token_ids,
+                'num_tokens': len(trace.current_token_ids),
+                'confs': trace.current_confs,
+                'extracted_answer': extracted_answer,
+                'is_complete': trace.is_complete,
+                'generation_started_at_iteration': trace.generation_started_at_iteration,
+                'generation_started_at_tokens': trace.generation_started_at_tokens
+            }
+
+            all_traces.append(trace_dict)
+            total_tokens += trace_dict['num_tokens']
+
+        output.all_traces = all_traces
+        output.total_tokens = total_tokens
+        output.total_traces_count = len(all_traces)
+        output.avg_tokens_per_trace = total_tokens / len(all_traces) if all_traces else 0
+
+        # Get genealogy information
+        output.branch_genealogy = manager.get_genealogy()
+        output.branch_events = [
+            {
+                'iteration': e.iteration,
+                'parent_trace_idx': e.parent_trace_idx,
+                'child_trace_idx': e.child_trace_idx,
+                'branch_point_tokens': e.branch_point_tokens,
+                'parent_tail_confidence': e.parent_tail_confidence
+            }
+            for e in manager.branch_events
+        ]
+
+        # Perform basic voting
+        self._perform_basic_voting(output)
+
+        output.processing_time = time.time() - processing_start
+
+        print(f"\nBranching generation complete:")
+        print(f"  Total traces: {len(all_traces)}")
+        print(f"  Total tokens: {total_tokens}")
+        print(f"  Branch events: {len(manager.branch_events)}")
+
+        return output
