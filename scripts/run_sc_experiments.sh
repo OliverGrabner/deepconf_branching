@@ -21,7 +21,7 @@ echo ""
 # ============================================
 echo "Experiment 1: Quick test (8 traces, first 3 questions)"
 echo "------------------------------------------"
-python run_traditional_sc_aime25.py \
+python scripts/run_traditional_sc_aime25.py \
     --model $MODEL \
     --model_type $MODEL_TYPE \
     --num_traces 8 \
@@ -37,7 +37,7 @@ echo ""
 # ============================================
 echo "Experiment 2: Standard Self-Consistency (64 traces, both datasets)"
 echo "------------------------------------------"
-python run_traditional_sc_aime25.py \
+python scripts/run_traditional_sc_aime25.py \
     --model $MODEL \
     --model_type $MODEL_TYPE \
     --num_traces 64 \
@@ -53,7 +53,7 @@ echo ""
 # Uncomment to run high-budget experiment
 # echo "Experiment 3: High-budget Self-Consistency (128 traces, both datasets)"
 # echo "------------------------------------------"
-# python run_traditional_sc_aime25.py \
+# python scripts/run_traditional_sc_aime25.py \
 #     --model $MODEL \
 #     --model_type $MODEL_TYPE \
 #     --num_traces 128 \
@@ -69,7 +69,7 @@ echo ""
 # Uncomment to run low-budget experiment
 # echo "Experiment 4: Low-budget Self-Consistency (16 traces, both datasets)"
 # echo "------------------------------------------"
-# python run_traditional_sc_aime25.py \
+# python scripts/run_traditional_sc_aime25.py \
 #     --model $MODEL \
 #     --model_type $MODEL_TYPE \
 #     --num_traces 16 \
@@ -94,4 +94,4 @@ echo "To view CSV results:"
 echo "  cat $OUTPUT_DIR/traditional_sc_aime25_summary_*.csv | column -t -s, | less -S"
 echo ""
 echo "To analyze JSON results:"
-echo "  python -m json.tool $OUTPUT_DIR/traditional_sc_aime25_stats_*.json"
+echo "  python scripts/analyze_sc_results.py $OUTPUT_DIR/traditional_sc_aime25_detailed_*.json"

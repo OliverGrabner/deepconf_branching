@@ -14,5 +14,8 @@ tqdm>=4.65.0
 # Math evaluation
 dynasor>=0.1.0
 
+# Visualization (optional, for trace confidence graphs)
+matplotlib>=3.5.0
+
 # Optional but recommended
 accelerate>=0.20.0
