@@ -14,12 +14,16 @@ Usage:
 """
 
 import os
+import sys
 import json
 import pickle
 import argparse
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 import numpy as np
+
+# Add parent directory to path to import local deepconf
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import torch
 from datasets import load_dataset

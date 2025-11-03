@@ -169,15 +169,13 @@ python scripts/visualize_sc_results.py outputs_sc/traditional_sc_aime25_detailed
 
 ## 📚 Documentation
 
-Comprehensive guides in [`docs/`](docs/):
+Simple guides in [`docs/`](docs/):
 
 | Document | Description |
 |----------|-------------|
-| [**QUICKSTART.md**](docs/QUICKSTART.md) | TL;DR commands and examples |
-| [**SELF_CONSISTENCY.md**](docs/SELF_CONSISTENCY.md) | Traditional SC on AIME 2025 |
-| [**TRACE_VISUALIZATION.md**](docs/TRACE_VISUALIZATION.md) | Confidence tracking guide |
-| [**IMPLEMENTATION.md**](docs/IMPLEMENTATION.md) | Technical implementation details |
-| [**CHANGELOG.md**](docs/CHANGELOG.md) | Recent features and changes |
+| [**QUICKSTART.md**](docs/QUICKSTART.md) | Quick reference - commands and options |
+| [**SELF_CONSISTENCY.md**](docs/SELF_CONSISTENCY.md) | SC implementation on AIME 2025 |
+| [**TRACE_VISUALIZATION.md**](docs/TRACE_VISUALIZATION.md) | Confidence tracking and graphs |
 
 ## 💡 Examples
 
@@ -381,7 +379,6 @@ MIT License - see LICENSE file for details.
 - [📖 Quick Start Guide](docs/QUICKSTART.md)
 - [🧮 Self-Consistency Guide](docs/SELF_CONSISTENCY.md)
 - [📊 Visualization Guide](docs/TRACE_VISUALIZATION.md)
-- [🔧 Implementation Details](docs/IMPLEMENTATION.md)
 
 **Ready to start?**
 

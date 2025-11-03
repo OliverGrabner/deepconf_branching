@@ -12,6 +12,7 @@ Usage:
 """
 
 import os
+import sys
 import json
 import argparse
 import pandas as pd
@@ -19,6 +20,9 @@ from datetime import datetime
 from typing import Dict, List, Any, Tuple
 from collections import Counter
 from tqdm import tqdm
+
+# Add parent directory to path to import local deepconf
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import torch
 from datasets import load_dataset

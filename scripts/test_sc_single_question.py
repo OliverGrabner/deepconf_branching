@@ -6,11 +6,16 @@ Usage:
 """
 
 import os
+import sys
 import torch
 from datasets import load_dataset
 from vllm import SamplingParams
-from deepconf import DeepThinkLLM, prepare_prompt, equal_func
 from collections import Counter
+
+# Add parent directory to path to import local deepconf
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from deepconf import DeepThinkLLM, prepare_prompt, equal_func
 
 
 def main():
