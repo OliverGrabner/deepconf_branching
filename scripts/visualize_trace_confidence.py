@@ -202,7 +202,7 @@ def plot_confidence_evolution_matplotlib(data: Dict[str, Any], output_path: str)
     # Plot 2: Correct traces only
     ax2 = axes[0, 1]
     if correct_traces:
-        cmap = cm.get_cmap('Greens')
+        cmap = plt.colormaps.get_cmap('Greens')
         for i, trace in enumerate(correct_traces):
             evolution = trace['confidence_evolution']
             if evolution:
@@ -225,7 +225,7 @@ def plot_confidence_evolution_matplotlib(data: Dict[str, Any], output_path: str)
     # Plot 3: Incorrect traces only
     ax3 = axes[1, 0]
     if incorrect_traces:
-        cmap = cm.get_cmap('Reds')
+        cmap = plt.colormaps.get_cmap('Reds')
         for i, trace in enumerate(incorrect_traces):
             evolution = trace['confidence_evolution']
             if evolution:
@@ -268,13 +268,16 @@ def plot_confidence_evolution_matplotlib(data: Dict[str, Any], output_path: str)
     ax4.grid(True, alpha=0.3, axis='y')
 
     # Add statistics text
+    correct_mean_str = f"{np.mean(correct_final):.3f}" if correct_final else "N/A"
+    incorrect_mean_str = f"{np.mean(incorrect_final):.3f}" if incorrect_final else "N/A"
+
     stats_text = f"""
     Ground Truth: {data['ground_truth']}
     Final Answer: {data['final_answer']}
     Correct Traces: {len(correct_traces)}/{len(traces)}
 
-    Correct Mean Final Conf: {np.mean(correct_final):.3f if correct_final else 'N/A'}
-    Incorrect Mean Final Conf: {np.mean(incorrect_final):.3f if incorrect_final else 'N/A'}
+    Correct Mean Final Conf: {correct_mean_str}
+    Incorrect Mean Final Conf: {incorrect_mean_str}
 
     Total Tokens: {data['statistics']['total_tokens']:,}
     Avg Tokens/Trace: {data['statistics']['avg_tokens_per_trace']:.1f}
