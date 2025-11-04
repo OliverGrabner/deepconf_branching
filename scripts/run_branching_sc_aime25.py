@@ -111,9 +111,23 @@ def process_question_branching(
     # Extract answers from all traces
     all_answers = []
     valid_traces = []
+    full_traces = []  # Store full trace data for visualization
 
     for trace in result.all_traces:
         extracted_answer = trace.get('extracted_answer')
+
+        # Store full trace data (including confidences for visualization)
+        full_traces.append({
+            'trace_idx': trace.get('trace_idx'),
+            'parent_idx': trace.get('parent_idx'),
+            'answer': extracted_answer,
+            'num_tokens': trace.get('num_tokens', 0),
+            'generation_started_at_iteration': trace.get('generation_started_at_iteration', 0),
+            'generation_started_at_tokens': trace.get('generation_started_at_tokens', 0),
+            'confs': trace.get('confs', []),  # Include for visualization
+            'extracted_answer': extracted_answer
+        })
+
         if extracted_answer is not None:
             all_answers.append(extracted_answer)
             valid_traces.append({
@@ -163,6 +177,7 @@ def process_question_branching(
         'individual_trace_accuracy': individual_accuracy,
         'vote_distribution': vote_distribution,
         'valid_traces': valid_traces,
+        'full_traces': full_traces,  # Include full trace data with confidences
         'branch_genealogy': result.branch_genealogy,
         'branch_events': result.branch_events,
         'branching_config': result.branching_config,
@@ -376,6 +391,9 @@ def save_results(
         json.dump(summary, f, indent=2)
     print(f"Aggregate statistics saved to: {stats_filename}")
 
+    # Return filenames for visualization
+    return json_filename
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -536,11 +554,36 @@ def main():
     print_final_summary(summary)
 
     # Save results
-    save_results(all_results, summary, args.output_dir, args)
+    json_filepath = save_results(all_results, summary, args.output_dir, args)
+
+    # Generate visualizations
+    print("\n" + "="*80)
+    print("GENERATING VISUALIZATIONS")
+    print("="*80)
+
+    viz_dir = os.path.join(args.output_dir, "visualizations")
+    os.makedirs(viz_dir, exist_ok=True)
+
+    try:
+        # Import visualization module
+        from visualize_branching_results import create_all_visualizations
+
+        create_all_visualizations(json_filepath, viz_dir, question_id=None)
+
+        print(f"\n✓ Visualizations saved to: {viz_dir}")
+
+    except ImportError:
+        print("\n⚠️  Visualization module not found")
+        print("Run manually: python scripts/visualize_branching_results.py --results " + json_filepath)
+    except Exception as e:
+        print(f"\n⚠️  Visualization failed: {e}")
+        print("Run manually: python scripts/visualize_branching_results.py --results " + json_filepath)
 
     print("\n" + "="*80)
     print("EXPERIMENT COMPLETE")
     print("="*80)
+    print(f"\nResults: {json_filepath}")
+    print(f"Visualizations: {viz_dir}")
 
 
 if __name__ == "__main__":
