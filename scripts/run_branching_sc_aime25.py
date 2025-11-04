@@ -20,6 +20,7 @@ import sys
 import json
 import argparse
 import pandas as pd
+import numpy as np
 from datetime import datetime
 from typing import Dict, List, Any
 from collections import Counter
@@ -115,16 +116,37 @@ def process_question_branching(
 
     for trace in result.all_traces:
         extracted_answer = trace.get('extracted_answer')
+        confs = trace.get('confs', [])
+
+        # Calculate final tail confidence (mean of last 2048 tokens)
+        tail_window = 2048
+        if len(confs) >= tail_window:
+            final_tail_confidence = float(np.mean(confs[-tail_window:]))
+        elif confs:
+            final_tail_confidence = float(np.mean(confs))
+        else:
+            final_tail_confidence = 0.0
+
+        # Check if this trace is correct
+        is_correct = False
+        if extracted_answer and ground_truth:
+            try:
+                is_correct = equal_func(extracted_answer, ground_truth)
+            except:
+                is_correct = str(extracted_answer) == str(ground_truth)
 
         # Store full trace data (including confidences for visualization)
         full_traces.append({
             'trace_idx': trace.get('trace_idx'),
             'parent_idx': trace.get('parent_idx'),
             'answer': extracted_answer,
+            'is_correct': is_correct,  # NEW: Per-trace correctness
             'num_tokens': trace.get('num_tokens', 0),
+            'tokens_generated': trace.get('tokens_generated', 0),  # NEW: Accurate token count
             'generation_started_at_iteration': trace.get('generation_started_at_iteration', 0),
             'generation_started_at_tokens': trace.get('generation_started_at_tokens', 0),
-            'confs': trace.get('confs', []),  # Include for visualization
+            'confs': confs,  # Include for visualization
+            'final_tail_confidence': final_tail_confidence,  # NEW: Final confidence
             'extracted_answer': extracted_answer
         })
 
@@ -134,7 +156,10 @@ def process_question_branching(
                 'trace_idx': trace.get('trace_idx'),
                 'parent_idx': trace.get('parent_idx'),
                 'answer': extracted_answer,
+                'is_correct': is_correct,  # NEW
                 'num_tokens': trace.get('num_tokens', 0),
+                'tokens_generated': trace.get('tokens_generated', 0),  # NEW
+                'final_tail_confidence': final_tail_confidence,  # NEW
                 'generation_started_at_iteration': trace.get('generation_started_at_iteration', 0),
                 'generation_started_at_tokens': trace.get('generation_started_at_tokens', 0)
             })
@@ -183,11 +208,13 @@ def process_question_branching(
         'branching_config': result.branching_config,
         'statistics': {
             'total_tokens': result.total_tokens,
+            'total_tokens_generated': result.total_tokens_generated,  # NEW: Accurate token count
             'avg_tokens_per_trace': result.avg_tokens_per_trace,
+            'avg_tokens_generated_per_trace': result.avg_tokens_generated_per_trace,  # NEW
             'generation_time': result.generation_time,
             'processing_time': result.processing_time,
             'total_time': result.total_time,
-            'throughput_tokens_per_sec': result.total_tokens / result.generation_time if result.generation_time > 0 else 0
+            'throughput_tokens_per_sec': result.total_tokens_generated / result.generation_time if result.generation_time > 0 else 0  # Use generated tokens for throughput
         }
     }
 

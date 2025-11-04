@@ -40,7 +40,9 @@ class DeepThinkOutput:
     warmup_tokens: int = 0
     final_tokens: int = 0
     total_tokens: int = 0
+    total_tokens_generated: int = 0  # NEW: Only newly generated tokens (excludes inherited from branching)
     avg_tokens_per_trace: float = 0.0
+    avg_tokens_generated_per_trace: float = 0.0  # NEW: Average new tokens only
     avg_tokens_per_warmup_trace: float = 0.0
     avg_tokens_per_final_trace: float = 0.0
     
@@ -97,7 +99,9 @@ class DeepThinkOutput:
                 "warmup_tokens": self.warmup_tokens,
                 "final_tokens": self.final_tokens,
                 "total_tokens": self.total_tokens,
+                "total_tokens_generated": self.total_tokens_generated,  # NEW
                 "avg_tokens_per_trace": self.avg_tokens_per_trace,
+                "avg_tokens_generated_per_trace": self.avg_tokens_generated_per_trace,  # NEW
                 "avg_tokens_per_warmup_trace": self.avg_tokens_per_warmup_trace,
                 "avg_tokens_per_final_trace": self.avg_tokens_per_final_trace,
             },
@@ -150,8 +154,10 @@ class DeepThinkOutput:
         
         if self.final_answer:
             print(f"Final answer: {self.final_answer}")
-        
+
         print(f"Total tokens: {self.total_tokens}")
+        if self.mode == "branching" and self.total_tokens_generated > 0:
+            print(f"Tokens generated (excluding inherited): {self.total_tokens_generated}")
         
         if self.mode == "online":
             print(f"Warmup tokens: {self.warmup_tokens}, Final tokens: {self.final_tokens}")

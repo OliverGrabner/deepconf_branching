@@ -182,6 +182,111 @@ def create_genealogy_graph(
     plt.close()
 
 
+def create_per_problem_summary(
+    result: Dict[str, Any],
+    dataset_name: str,
+    q_idx: int,
+    output_path: str
+):
+    """
+    Create a comprehensive per-problem summary visualization
+
+    4-panel plot:
+    1. Final confidence vs correctness (scatter)
+    2. Token usage by trace type
+    3. Branch timeline
+    4. Answer distribution
+    """
+    if not MATPLOTLIB_AVAILABLE:
+        print("Skipping per-problem summary (matplotlib not available)")
+        return
+
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+
+    traces = result.get('full_traces', [])
+    genealogy = result.get('branch_genealogy', {})
+    events = result.get('branch_events', [])
+    ground_truth = result.get('ground_truth', '')
+
+    # Panel 1: Final Confidence vs Correctness
+    correct_confs = [t['final_tail_confidence'] for t in traces if t.get('is_correct')]
+    incorrect_confs = [t['final_tail_confidence'] for t in traces if not t.get('is_correct')]
+
+    if correct_confs:
+        ax1.scatter(range(len(correct_confs)), correct_confs,
+                   c='green', s=100, alpha=0.6, label='Correct', marker='o')
+    if incorrect_confs:
+        ax1.scatter(range(len(incorrect_confs)), incorrect_confs,
+                   c='red', s=100, alpha=0.6, label='Incorrect', marker='x')
+
+    ax1.set_xlabel('Trace Index (sorted by correctness)')
+    ax1.set_ylabel('Final Tail Confidence')
+    ax1.set_title(f'Final Confidence by Correctness\n{len(correct_confs)}/{len(traces)} correct')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    # Panel 2: Token Usage by Trace Type
+    original_tokens = [t.get('tokens_generated', 0) for t in traces if t.get('parent_idx') is None]
+    branched_tokens = [t.get('tokens_generated', 0) for t in traces if t.get('parent_idx') is not None]
+
+    if original_tokens and branched_tokens:
+        ax2.boxplot([original_tokens, branched_tokens],
+                   labels=['Original', 'Branched'],
+                   patch_artist=True)
+        ax2.set_ylabel('Tokens Generated')
+        ax2.set_title('Token Distribution by Trace Type')
+        ax2.grid(True, alpha=0.3, axis='y')
+
+        # Add stats
+        ax2.text(0.5, 0.95, f'Original: {np.mean(original_tokens):.0f} ± {np.std(original_tokens):.0f}\n'
+                            f'Branched: {np.mean(branched_tokens):.0f} ± {np.std(branched_tokens):.0f}',
+                transform=ax2.transAxes, ha='center', va='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    # Panel 3: Branch Timeline
+    if events:
+        iterations = [e.get('iteration', 0) for e in events]
+        parent_confs = [e.get('parent_tail_confidence', 0) for e in events]
+
+        ax3.scatter(iterations, parent_confs, c='blue', s=50, alpha=0.7)
+        ax3.set_xlabel('Iteration')
+        ax3.set_ylabel('Parent Tail Confidence at Branch')
+        ax3.set_title(f'Branch Timeline ({len(events)} events)')
+        ax3.grid(True, alpha=0.3)
+
+        # Add trend line
+        if len(iterations) > 1:
+            z = np.polyfit(iterations, parent_confs, 1)
+            p = np.poly1d(z)
+            ax3.plot(sorted(set(iterations)), [p(x) for x in sorted(set(iterations))],
+                    "r--", alpha=0.5, linewidth=2)
+
+    # Panel 4: Answer Distribution
+    answers = [t.get('answer', 'None') for t in traces if t.get('answer')]
+    answer_counts = Counter(answers)
+    answer_labels = [str(ans)[:15] for ans in answer_counts.keys()]
+    answer_values = list(answer_counts.values())
+
+    colors = ['green' if str(ans) == str(ground_truth) else 'red'
+             for ans in answer_counts.keys()]
+
+    ax4.bar(range(len(answer_labels)), answer_values, color=colors, alpha=0.7)
+    ax4.set_xticks(range(len(answer_labels)))
+    ax4.set_xticklabels(answer_labels, rotation=45, ha='right')
+    ax4.set_ylabel('Number of Traces')
+    ax4.set_title(f'Answer Distribution\nGround Truth: {ground_truth}')
+    ax4.grid(True, alpha=0.3, axis='y')
+
+    # Overall title
+    fig.suptitle(f'{dataset_name} Question {q_idx}\nCorrectness: {"✓ CORRECT" if result.get("is_correct") else "✗ INCORRECT"}',
+                fontsize=14, fontweight='bold')
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f".", end="", flush=True)
+    plt.close()
+
+
 def create_confidence_evolution_plot(
     traces: List[Dict[str, Any]],
     genealogy: Dict[str, Any],
@@ -460,41 +565,61 @@ def create_all_visualizations(
     print("CREATING VISUALIZATIONS")
     print('='*80)
 
-    # If specific question requested, visualize just that
+    # Per-question visualizations
+    questions_to_visualize = []
     if question_id is not None:
+        # Specific question requested
+        questions_to_visualize = [(dataset_name, question_id)
+                                  for dataset_name in results_by_dataset.keys()]
+    else:
+        # Visualize ALL questions
         for dataset_name, results in results_by_dataset.items():
-            if question_id < len(results):
-                result = results[question_id]
-                print(f"\nVisualizing {dataset_name} Question {question_id}")
+            for q_idx in range(len(results)):
+                questions_to_visualize.append((dataset_name, q_idx))
 
-                # Genealogy graph
-                if result.get('branch_genealogy'):
-                    genealogy_path = os.path.join(
-                        output_dir,
-                        f"genealogy_{dataset_name}_q{question_id}_{timestamp}.png"
-                    )
-                    create_genealogy_graph(
-                        result['branch_genealogy'],
-                        result.get('full_traces', result.get('valid_traces', [])),
-                        result.get('ground_truth', ''),
-                        genealogy_path
-                    )
+    print(f"\nCreating per-question visualizations ({len(questions_to_visualize)} questions)...")
 
-                # Confidence evolution
-                if result.get('full_traces') and result.get('branching_config'):
-                    conf_path = os.path.join(
-                        output_dir,
-                        f"confidence_{dataset_name}_q{question_id}_{timestamp}.png"
-                    )
-                    create_confidence_evolution_plot(
-                        result['full_traces'],
-                        result['branch_genealogy'],
-                        result['branching_config'],
-                        result.get('ground_truth', ''),
-                        conf_path
-                    )
+    for dataset_name, q_idx in questions_to_visualize:
+        results = results_by_dataset.get(dataset_name, [])
+        if q_idx >= len(results):
+            continue
 
-                break
+        result = results[q_idx]
+        print(f"  [{dataset_name} Q{q_idx}]", end=" ")
+
+        # Per-problem summary (4-panel overview)
+        summary_path = os.path.join(
+            output_dir,
+            f"summary_{dataset_name}_q{q_idx}_{timestamp}.png"
+        )
+        create_per_problem_summary(result, dataset_name, q_idx, summary_path)
+
+        # Genealogy graph
+        if result.get('branch_genealogy'):
+            genealogy_path = os.path.join(
+                output_dir,
+                f"genealogy_{dataset_name}_q{q_idx}_{timestamp}.png"
+            )
+            create_genealogy_graph(
+                result['branch_genealogy'],
+                result.get('full_traces', result.get('valid_traces', [])),
+                result.get('ground_truth', ''),
+                genealogy_path
+            )
+
+        # Confidence evolution
+        if result.get('full_traces') and result.get('branching_config'):
+            conf_path = os.path.join(
+                output_dir,
+                f"confidence_{dataset_name}_q{q_idx}_{timestamp}.png"
+            )
+            create_confidence_evolution_plot(
+                result['full_traces'],
+                result['branch_genealogy'],
+                result['branching_config'],
+                result.get('ground_truth', ''),
+                conf_path
+            )
 
     # Overall visualizations
     print("\nCreating dataset-wide visualizations...")
