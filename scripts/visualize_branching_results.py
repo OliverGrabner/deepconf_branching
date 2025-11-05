@@ -295,108 +295,158 @@ def create_confidence_evolution_plot(
     output_path: str
 ):
     """
-    Plot confidence evolution over time with branch points marked
+    Plot confidence evolution over time - 4-panel visualization
 
     Shows:
-    - Confidence curves for each trace
-    - Vertical lines at branch points
-    - Color-coded by correctness
+    - Panel 1: All traces (green=correct, red=incorrect)
+    - Panel 2: Correct traces only
+    - Panel 3: Incorrect traces only
+    - Panel 4: Distribution of final tail confidence
     """
     if not MATPLOTLIB_AVAILABLE:
         print("Skipping confidence evolution plot (matplotlib not available)")
         return
 
-    events = genealogy.get('events', [])
-    stride = branching_config.get('stride', 600)
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10))
-
-    # Separate correct and incorrect
+    # Separate correct and incorrect traces
     correct_traces = [t for t in traces if t.get('answer') == ground_truth or t.get('extracted_answer') == ground_truth]
     incorrect_traces = [t for t in traces if t.get('answer') != ground_truth and t.get('extracted_answer') != ground_truth]
 
-    # Plot 1: All traces
+    # Create figure with 2x2 subplots
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle(f'Trace Confidence Evolution', fontsize=14, fontweight='bold')
+
+    # Helper function to compute tail confidence evolution
+    def compute_tail_evolution(confs, tail_window=2048, step_size=100):
+        positions = []
+        tail_confs = []
+        for i in range(tail_window, len(confs), step_size):
+            positions.append(i)
+            tail = confs[max(0, i-tail_window):i]
+            tail_confs.append(np.mean(tail))
+        return positions, tail_confs
+
+    # Panel 1: All traces
+    ax1 = axes[0, 0]
     for trace in traces:
         confs = trace.get('confs', [])
         if not confs:
             continue
 
-        # Compute tail confidence at regular intervals
-        tail_window = 2048
-        positions = []
-        tail_confs = []
-
-        for i in range(tail_window, len(confs), 100):
-            positions.append(i)
-            tail = confs[max(0, i-tail_window):i]
-            tail_confs.append(np.mean(tail))
-
+        positions, tail_confs = compute_tail_evolution(confs)
         if not positions:
             continue
 
-        is_correct = trace.get('extracted_answer') == ground_truth
+        is_correct = trace.get('extracted_answer') == ground_truth or trace.get('answer') == ground_truth
         color = 'green' if is_correct else 'red'
         alpha = 0.6 if is_correct else 0.3
-        linewidth = 1.5 if is_correct else 1.0
+        linewidth = 1
 
         ax1.plot(positions, tail_confs, color=color, alpha=alpha, linewidth=linewidth)
 
-    # Mark branch points
-    for event in events:
-        branch_tokens = event.get('branch_point_tokens', 0)
-        ax1.axvline(branch_tokens, color='blue', linestyle='--', alpha=0.3, linewidth=1)
-        ax1.text(branch_tokens, ax1.get_ylim()[1]*0.95,
-                f"Branch\niter {event.get('iteration', '?')}",
-                fontsize=7, ha='center', va='top',
-                bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.7))
-
     ax1.set_xlabel('Token Position')
-    ax1.set_ylabel('Tail Confidence (mean of last 2048 tokens)')
-    ax1.set_title('Confidence Evolution - All Traces (Green=Correct, Red=Incorrect, Blue=Branch Point)')
+    ax1.set_ylabel('Tail Confidence (mean of last N tokens)')
+    ax1.set_title('All Traces (Green=Correct, Red=Incorrect)')
     ax1.grid(True, alpha=0.3)
-    ax1.legend(['Correct', 'Incorrect', 'Branch Point'], loc='upper right')
+    ax1.legend(['Correct', 'Incorrect'])
 
-    # Plot 2: Correct traces only (detailed)
+    # Panel 2: Correct traces only
+    ax2 = axes[0, 1]
     if correct_traces:
-        for trace in correct_traces:
+        cmap = plt.colormaps.get_cmap('Greens')
+        for i, trace in enumerate(correct_traces):
             confs = trace.get('confs', [])
             if not confs:
                 continue
 
-            tail_window = 2048
-            positions = []
-            tail_confs = []
-
-            for i in range(tail_window, len(confs), 100):
-                positions.append(i)
-                tail = confs[max(0, i-tail_window):i]
-                tail_confs.append(np.mean(tail))
-
+            positions, tail_confs = compute_tail_evolution(confs)
             if not positions:
                 continue
 
-            trace_idx = trace.get('trace_idx', '?')
-            parent_idx = trace.get('parent_idx')
-            label = f"Trace {trace_idx}" + (f" (from {parent_idx})" if parent_idx is not None else " (orig)")
+            trace_idx = trace.get('trace_idx', i)
+            answer = trace.get('answer', trace.get('extracted_answer', 'N/A'))
+            color = cmap(0.3 + 0.7 * (i / max(1, len(correct_traces))))
 
-            ax2.plot(positions, tail_confs, alpha=0.7, linewidth=1.5, label=label)
-
-        # Mark branch points
-        for event in events:
-            branch_tokens = event.get('branch_point_tokens', 0)
-            ax2.axvline(branch_tokens, color='blue', linestyle='--', alpha=0.3, linewidth=1)
+            ax2.plot(positions, tail_confs, color=color, alpha=0.7, linewidth=1.5,
+                    label=f"Trace {trace_idx} (ans={answer})")
 
         ax2.set_xlabel('Token Position')
         ax2.set_ylabel('Tail Confidence')
         ax2.set_title(f'Correct Traces Only (n={len(correct_traces)})')
         ax2.grid(True, alpha=0.3)
         if len(correct_traces) <= 10:
-            ax2.legend(fontsize=8, loc='best')
+            ax2.legend(fontsize=8)
     else:
-        ax2.text(0.5, 0.5, 'No correct traces', ha='center', va='center',
-                transform=ax2.transAxes, fontsize=14)
+        ax2.text(0.5, 0.5, 'No correct traces', ha='center', va='center', transform=ax2.transAxes)
+        ax2.set_title('Correct Traces Only (n=0)')
 
-    plt.tight_layout()
+    # Panel 3: Incorrect traces only
+    ax3 = axes[1, 0]
+    if incorrect_traces:
+        cmap = plt.colormaps.get_cmap('Reds')
+        for i, trace in enumerate(incorrect_traces):
+            confs = trace.get('confs', [])
+            if not confs:
+                continue
+
+            positions, tail_confs = compute_tail_evolution(confs)
+            if not positions:
+                continue
+
+            trace_idx = trace.get('trace_idx', i)
+            answer = trace.get('answer', trace.get('extracted_answer', 'N/A'))
+            color = cmap(0.3 + 0.7 * (i / max(1, len(incorrect_traces))))
+
+            ax3.plot(positions, tail_confs, color=color, alpha=0.7, linewidth=1.5,
+                    label=f"Trace {trace_idx} (ans={answer})")
+
+        ax3.set_xlabel('Token Position')
+        ax3.set_ylabel('Tail Confidence')
+        ax3.set_title(f'Incorrect Traces Only (n={len(incorrect_traces)})')
+        ax3.grid(True, alpha=0.3)
+        if len(incorrect_traces) <= 10:
+            ax3.legend(fontsize=8)
+    else:
+        ax3.text(0.5, 0.5, 'No incorrect traces', ha='center', va='center', transform=ax3.transAxes)
+        ax3.set_title('Incorrect Traces Only (n=0)')
+
+    # Panel 4: Final confidence distribution
+    ax4 = axes[1, 1]
+
+    # Compute final tail confidence for each trace
+    tail_window = 2048
+    correct_final = []
+    incorrect_final = []
+
+    for trace in correct_traces:
+        confs = trace.get('confs', [])
+        if confs:
+            final_conf = np.mean(confs[-tail_window:]) if len(confs) >= tail_window else np.mean(confs)
+            correct_final.append(final_conf)
+
+    for trace in incorrect_traces:
+        confs = trace.get('confs', [])
+        if confs:
+            final_conf = np.mean(confs[-tail_window:]) if len(confs) >= tail_window else np.mean(confs)
+            incorrect_final.append(final_conf)
+
+    if correct_final or incorrect_final:
+        all_final = correct_final + incorrect_final
+        bins = np.linspace(min(all_final), max(all_final), 20)
+
+        if correct_final:
+            ax4.hist(correct_final, bins=bins, alpha=0.6, color='green', label='Correct', edgecolor='black')
+        if incorrect_final:
+            ax4.hist(incorrect_final, bins=bins, alpha=0.6, color='red', label='Incorrect', edgecolor='black')
+
+        ax4.set_xlabel('Final Tail Confidence')
+        ax4.set_ylabel('Number of Traces')
+        ax4.set_title('Distribution of Final Tail Confidence')
+        ax4.legend()
+        ax4.grid(True, alpha=0.3, axis='y')
+    else:
+        ax4.text(0.5, 0.5, 'No data available', ha='center', va='center', transform=ax4.transAxes)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"  Confidence evolution saved to: {output_path}")
     plt.close()
