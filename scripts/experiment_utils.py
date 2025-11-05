@@ -485,10 +485,66 @@ def generate_question_visualizations(
                 confidence_path
             )
 
-        # Traditional SC visualizations would go here (not implemented yet)
-        # else:
-        #     # Create traditional SC visualizations
-        #     pass
+        elif experiment_type == "traditional":
+            # Import matplotlib for traditional SC plots
+            import matplotlib.pyplot as plt
+            import numpy as np
+            from collections import Counter
+
+            # Create a 2-panel summary for traditional SC
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+            # Panel 1: Vote distribution
+            vote_dist = result.get('vote_distribution', {})
+            if vote_dist:
+                answers = list(vote_dist.keys())
+                votes = list(vote_dist.values())
+                colors = ['green' if str(ans) == str(result.get('ground_truth', '')) else 'red' for ans in answers]
+
+                ax1.bar(range(len(answers)), votes, color=colors, alpha=0.7)
+                ax1.set_xlabel('Answer', fontsize=12)
+                ax1.set_ylabel('Number of Votes', fontsize=12)
+                ax1.set_title(f'Vote Distribution (Q{question_idx})', fontsize=14, fontweight='bold')
+                ax1.set_xticks(range(len(answers)))
+                ax1.set_xticklabels([str(a)[:10] for a in answers], rotation=45, ha='right')
+                ax1.grid(axis='y', alpha=0.3)
+
+                # Add legend
+                from matplotlib.patches import Patch
+                legend_elements = [
+                    Patch(facecolor='green', alpha=0.7, label='Correct'),
+                    Patch(facecolor='red', alpha=0.7, label='Incorrect')
+                ]
+                ax1.legend(handles=legend_elements, loc='upper right')
+
+            # Panel 2: Token distribution across traces
+            valid_traces = result.get('valid_traces', [])
+            if valid_traces:
+                token_counts = [t.get('num_tokens', 0) for t in valid_traces if t.get('num_tokens', 0) > 0]
+                if token_counts:
+                    ax2.hist(token_counts, bins=20, color='steelblue', alpha=0.7, edgecolor='black')
+                    ax2.axvline(np.mean(token_counts), color='red', linestyle='--', linewidth=2, label=f'Mean: {np.mean(token_counts):.0f}')
+                    ax2.set_xlabel('Tokens per Trace', fontsize=12)
+                    ax2.set_ylabel('Frequency', fontsize=12)
+                    ax2.set_title(f'Token Distribution (Q{question_idx})', fontsize=14, fontweight='bold')
+                    ax2.legend()
+                    ax2.grid(axis='y', alpha=0.3)
+
+            # Add overall stats
+            fig.suptitle(
+                f"{dataset_name} - Q{question_idx} - Traditional SC\n"
+                f"Voted: {result.get('voted_answer', 'N/A')} | GT: {result.get('ground_truth', 'N/A')} | "
+                f"{'✓ CORRECT' if result.get('is_correct') else '✗ INCORRECT'}",
+                fontsize=16,
+                fontweight='bold',
+                color='green' if result.get('is_correct') else 'red'
+            )
+
+            plt.tight_layout(rect=[0, 0, 1, 0.93])
+
+            summary_path = os.path.join(viz_dir, f"summary_{dataset_name}_q{question_idx}_{timestamp}.png")
+            plt.savefig(summary_path, dpi=150, bbox_inches='tight')
+            plt.close()
 
         return True
 
