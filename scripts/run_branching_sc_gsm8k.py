@@ -1,39 +1,25 @@
 """
-Branching Self-Consistency on AIME 2025
+⚠️  DEPRECATED: Use scripts/run_experiment.py instead.
 
-⚠️  DEPRECATED: This script is replaced by the unified experiment runner.
+Branching Self-Consistency on GSM8k
 
-New usage:
-    python scripts/run_experiment.py \
-        --experiment branching \
-        --dataset AIME2025-I \
+This script implements branching self-consistency on the GSM8k benchmark:
+1. Start with S traces
+2. During generation, dynamically branch high-confidence traces
+3. Reach M traces by ~75% of average generation length
+4. Use simple majority voting on final answers
+
+Usage:
+    python run_branching_sc_gsm8k.py \
+        --model deepseek-ai/DeepSeek-R1-0528-Qwen3-8B \
         --start_traces 8 \
         --max_traces 32 \
-        --historical_stats historical_stats/aime25_token_stats_latest.json
-
-This script still works for backward compatibility but will not receive updates.
-See docs/QUICKSTART.md for the new unified interface.
-
-Original functionality:
-- Implements branching self-consistency
-- Start with S traces
-- Dynamically branch high-confidence traces during generation
-- Reach M traces by ~75% of average generation length
-- Use simple majority voting on final answers
+        --historical_stats historical_stats/gsm8k_token_stats_latest.json
 """
 
 import os
 import sys
 import json
-import warnings
-
-warnings.warn(
-    "\n⚠️  DEPRECATED: run_branching_sc_aime25.py is deprecated.\n"
-    "Use: python scripts/run_experiment.py --experiment branching --dataset AIME2025-I\n"
-    "See docs/QUICKSTART.md for details.",
-    DeprecationWarning,
-    stacklevel=2
-)
 import argparse
 import pandas as pd
 import numpy as np
@@ -49,23 +35,37 @@ import torch
 from datasets import load_dataset
 from vllm import SamplingParams
 
-from deepconf import DeepThinkLLM, prepare_prompt, equal_func
+from deepconf import DeepThinkLLM, prepare_prompt
+from deepconf.utils import extract_answer_gsm8k, equal_func_gsm8k
 
 # For incremental saving
 TEMP_RESULTS_SUFFIX = "_temp.json"
 
 
-def load_aime25(subset=None):
-    """Load AIME 2025 dataset from Hugging Face"""
-    if subset:
-        ds = load_dataset("opencompass/AIME2025", name=subset, split="test")
-        datasets = [(subset, ds)]
-    else:
-        ds1 = load_dataset("opencompass/AIME2025", name="AIME2025-I", split="test")
-        ds2 = load_dataset("opencompass/AIME2025", name="AIME2025-II", split="test")
-        datasets = [("AIME2025-I", ds1), ("AIME2025-II", ds2)]
+def load_gsm8k(split="test"):
+    """Load GSM8k dataset from Hugging Face"""
+    ds = load_dataset("openai/gsm8k", "main", split=split)
+    return ds
 
-    return datasets
+
+def extract_gsm8k_ground_truth(answer_text: str) -> str:
+    """
+    Extract ground truth from GSM8k answer field
+
+    GSM8k format: "reasoning text ... #### 123"
+    """
+    if "####" in answer_text:
+        parts = answer_text.split("####")
+        if len(parts) > 1:
+            # Extract number after ####
+            gt = parts[-1].strip()
+            # Remove any non-numeric characters except minus and decimal
+            import re
+            numbers = re.findall(r'-?\d+\.?\d*', gt)
+            if numbers:
+                return numbers[0]
+
+    return answer_text.strip()
 
 
 def load_historical_stats(stats_file: str) -> Dict[str, Dict[str, Any]]:
@@ -75,20 +75,19 @@ def load_historical_stats(stats_file: str) -> Dict[str, Dict[str, Any]]:
     return data['statistics']
 
 
-def get_average_tokens(historical_stats: Dict, dataset_name: str, question_idx: int) -> int:
+def get_average_tokens(historical_stats: Dict, question_idx: int) -> int:
     """Get historical average tokens for a specific question"""
-    if dataset_name in historical_stats:
-        q_key = str(question_idx)
-        if q_key in historical_stats[dataset_name]:
-            return int(historical_stats[dataset_name][q_key]['avg_tokens'])
+    q_key = str(question_idx)
+    if q_key in historical_stats:
+        return int(historical_stats[q_key]['avg_tokens'])
 
-    # Fallback: compute mean across all questions in dataset
-    if dataset_name in historical_stats:
-        all_avgs = [stats['avg_tokens'] for stats in historical_stats[dataset_name].values()]
+    # Fallback: compute mean across all questions
+    if historical_stats:
+        all_avgs = [stats['avg_tokens'] for stats in historical_stats.values()]
         return int(sum(all_avgs) / len(all_avgs)) if all_avgs else 8000
 
-    # Ultimate fallback
-    return 8000
+    # Ultimate fallback (GSM8k problems are typically shorter than AIME)
+    return 5000
 
 
 def process_question_branching(
@@ -134,7 +133,8 @@ def process_question_branching(
     full_traces = []  # Store full trace data for visualization
 
     for trace in result.all_traces:
-        extracted_answer = trace.get('extracted_answer')
+        # Use GSM8k-specific extraction
+        extracted_answer = extract_answer_gsm8k(trace.get('text', ''))
         confs = trace.get('confs', [])
 
         # Calculate final tail confidence (mean of last 2048 tokens)
@@ -150,7 +150,7 @@ def process_question_branching(
         is_correct = False
         if extracted_answer and ground_truth:
             try:
-                is_correct = equal_func(extracted_answer, ground_truth)
+                is_correct = equal_func_gsm8k(extracted_answer, ground_truth)
             except:
                 is_correct = str(extracted_answer) == str(ground_truth)
 
@@ -159,13 +159,13 @@ def process_question_branching(
             'trace_idx': trace.get('trace_idx'),
             'parent_idx': trace.get('parent_idx'),
             'answer': extracted_answer,
-            'is_correct': is_correct,  # NEW: Per-trace correctness
+            'is_correct': is_correct,
             'num_tokens': trace.get('num_tokens', 0),
-            'tokens_generated': trace.get('tokens_generated', 0),  # NEW: Accurate token count
+            'tokens_generated': trace.get('tokens_generated', 0),
             'generation_started_at_iteration': trace.get('generation_started_at_iteration', 0),
             'generation_started_at_tokens': trace.get('generation_started_at_tokens', 0),
             'confs': confs,  # Include for visualization
-            'final_tail_confidence': final_tail_confidence,  # NEW: Final confidence
+            'final_tail_confidence': final_tail_confidence,
             'extracted_answer': extracted_answer
         })
 
@@ -175,31 +175,35 @@ def process_question_branching(
                 'trace_idx': trace.get('trace_idx'),
                 'parent_idx': trace.get('parent_idx'),
                 'answer': extracted_answer,
-                'is_correct': is_correct,  # NEW
+                'is_correct': is_correct,
                 'num_tokens': trace.get('num_tokens', 0),
-                'tokens_generated': trace.get('tokens_generated', 0),  # NEW
-                'final_tail_confidence': final_tail_confidence,  # NEW
+                'tokens_generated': trace.get('tokens_generated', 0),
+                'final_tail_confidence': final_tail_confidence,
                 'generation_started_at_iteration': trace.get('generation_started_at_iteration', 0),
                 'generation_started_at_tokens': trace.get('generation_started_at_tokens', 0)
             })
 
-    # Get voted answer (from result)
-    voted_answer = result.final_answer
+    # Get voted answer using GSM8k-specific voting
+    if all_answers:
+        vote_counts = Counter(all_answers)
+        voted_answer = vote_counts.most_common(1)[0][0]
+    else:
+        voted_answer = None
 
     # Evaluate correctness
     is_correct = False
     if voted_answer and ground_truth:
         try:
-            is_correct = equal_func(voted_answer, ground_truth)
+            is_correct = equal_func_gsm8k(voted_answer, ground_truth)
         except Exception as e:
-            print(f"Warning: Error in equal_func: {e}")
+            print(f"Warning: Error in equal_func_gsm8k: {e}")
             is_correct = str(voted_answer) == str(ground_truth)
 
     # Calculate individual trace accuracy
     trace_accuracies = []
     for answer in all_answers:
         try:
-            trace_correct = equal_func(answer, ground_truth)
+            trace_correct = equal_func_gsm8k(answer, ground_truth)
         except:
             trace_correct = str(answer) == str(ground_truth)
         trace_accuracies.append(trace_correct)
@@ -227,13 +231,13 @@ def process_question_branching(
         'branching_config': result.branching_config,
         'statistics': {
             'total_tokens': result.total_tokens,
-            'total_tokens_generated': result.total_tokens_generated,  # NEW: Accurate token count
+            'total_tokens_generated': result.total_tokens_generated,
             'avg_tokens_per_trace': result.avg_tokens_per_trace,
-            'avg_tokens_generated_per_trace': result.avg_tokens_generated_per_trace,  # NEW
+            'avg_tokens_generated_per_trace': result.avg_tokens_generated_per_trace,
             'generation_time': result.generation_time,
             'processing_time': result.processing_time,
             'total_time': result.total_time,
-            'throughput_tokens_per_sec': result.total_tokens_generated / result.generation_time if result.generation_time > 0 else 0  # Use generated tokens for throughput
+            'throughput_tokens_per_sec': result.total_tokens_generated / result.generation_time if result.generation_time > 0 else 0
         }
     }
 
@@ -259,73 +263,39 @@ def print_question_summary(qid: int, result: Dict[str, Any]):
     print(f"  Time: {result['statistics']['total_time']:.2f}s")
 
 
-def generate_summary_report(all_results: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+def generate_summary_report(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Generate comprehensive summary statistics"""
 
-    summary = {
-        'overall': {},
-        'by_dataset': {}
-    }
+    num_questions = len(results)
+    num_correct = sum(1 for r in results if r['is_correct'])
+    accuracy = num_correct / num_questions if num_questions > 0 else 0.0
 
-    # Calculate per-dataset statistics
-    for dataset_name, results in all_results.items():
-        num_questions = len(results)
-        num_correct = sum(1 for r in results if r['is_correct'])
-        accuracy = num_correct / num_questions if num_questions > 0 else 0.0
+    total_tokens = sum(r['statistics']['total_tokens'] for r in results)
+    total_time = sum(r['statistics']['total_time'] for r in results)
+    avg_tokens = total_tokens / num_questions if num_questions > 0 else 0
+    avg_time = total_time / num_questions if num_questions > 0 else 0
 
-        total_tokens = sum(r['statistics']['total_tokens'] for r in results)
-        total_time = sum(r['statistics']['total_time'] for r in results)
-        avg_tokens = total_tokens / num_questions if num_questions > 0 else 0
-        avg_time = total_time / num_questions if num_questions > 0 else 0
+    avg_individual_accuracy = sum(r['individual_trace_accuracy'] for r in results) / num_questions if num_questions > 0 else 0.0
 
-        avg_individual_accuracy = sum(r['individual_trace_accuracy'] for r in results) / num_questions if num_questions > 0 else 0.0
-
-        # Branching statistics
-        total_branch_events = sum(
-            r.get('branch_genealogy', {}).get('statistics', {}).get('total_branch_events', 0)
-            for r in results
-        )
-        avg_branch_events = total_branch_events / num_questions if num_questions > 0 else 0
-
-        summary['by_dataset'][dataset_name] = {
-            'num_questions': num_questions,
-            'num_correct': num_correct,
-            'accuracy': accuracy,
-            'avg_individual_trace_accuracy': avg_individual_accuracy,
-            'total_tokens': total_tokens,
-            'avg_tokens_per_question': avg_tokens,
-            'total_time': total_time,
-            'avg_time_per_question': avg_time,
-            'throughput_tokens_per_sec': total_tokens / total_time if total_time > 0 else 0,
-            'total_branch_events': total_branch_events,
-            'avg_branch_events_per_question': avg_branch_events
-        }
-
-    # Calculate overall statistics
-    all_question_results = [r for results in all_results.values() for r in results]
-    total_questions = len(all_question_results)
-    total_correct = sum(1 for r in all_question_results if r['is_correct'])
-    overall_accuracy = total_correct / total_questions if total_questions > 0 else 0.0
-
-    overall_tokens = sum(r['statistics']['total_tokens'] for r in all_question_results)
-    overall_time = sum(r['statistics']['total_time'] for r in all_question_results)
-
-    overall_branch_events = sum(
+    # Branching statistics
+    total_branch_events = sum(
         r.get('branch_genealogy', {}).get('statistics', {}).get('total_branch_events', 0)
-        for r in all_question_results
+        for r in results
     )
+    avg_branch_events = total_branch_events / num_questions if num_questions > 0 else 0
 
-    summary['overall'] = {
-        'num_questions': total_questions,
-        'num_correct': total_correct,
-        'accuracy': overall_accuracy,
-        'total_tokens': overall_tokens,
-        'total_time': overall_time,
-        'avg_tokens_per_question': overall_tokens / total_questions if total_questions > 0 else 0,
-        'avg_time_per_question': overall_time / total_questions if total_questions > 0 else 0,
-        'throughput_tokens_per_sec': overall_tokens / overall_time if overall_time > 0 else 0,
-        'total_branch_events': overall_branch_events,
-        'avg_branch_events_per_question': overall_branch_events / total_questions if total_questions > 0 else 0
+    summary = {
+        'num_questions': num_questions,
+        'num_correct': num_correct,
+        'accuracy': accuracy,
+        'avg_individual_trace_accuracy': avg_individual_accuracy,
+        'total_tokens': total_tokens,
+        'avg_tokens_per_question': avg_tokens,
+        'total_time': total_time,
+        'avg_time_per_question': avg_time,
+        'throughput_tokens_per_sec': total_tokens / total_time if total_time > 0 else 0,
+        'total_branch_events': total_branch_events,
+        'avg_branch_events_per_question': avg_branch_events
     }
 
     return summary
@@ -334,42 +304,23 @@ def generate_summary_report(all_results: Dict[str, List[Dict[str, Any]]]) -> Dic
 def print_final_summary(summary: Dict[str, Any]):
     """Print formatted final summary"""
     print("\n" + "="*80)
-    print("BRANCHING SELF-CONSISTENCY - FINAL SUMMARY")
+    print("BRANCHING SELF-CONSISTENCY - GSM8K FINAL SUMMARY")
     print("="*80)
 
-    # Per-dataset results
-    print("\nPer-Dataset Results:")
-    print("-" * 80)
-    for dataset_name, stats in summary['by_dataset'].items():
-        print(f"\n{dataset_name}:")
-        print(f"  Questions: {stats['num_questions']}")
-        print(f"  Correct: {stats['num_correct']}/{stats['num_questions']} ({stats['accuracy']:.1%})")
-        print(f"  Avg Individual Trace Accuracy: {stats['avg_individual_trace_accuracy']:.1%}")
-        print(f"  Avg Branch Events: {stats['avg_branch_events_per_question']:.1f}")
-        print(f"  Total Tokens: {stats['total_tokens']:,}")
-        print(f"  Avg Tokens/Question: {stats['avg_tokens_per_question']:.1f}")
-        print(f"  Total Time: {stats['total_time']:.2f}s")
-        print(f"  Avg Time/Question: {stats['avg_time_per_question']:.2f}s")
-        print(f"  Throughput: {stats['throughput_tokens_per_sec']:.1f} tokens/sec")
-
-    # Overall results
-    print("\n" + "-" * 80)
-    print("Overall Results (AIME25-I + AIME25-II):")
-    print("-" * 80)
-    overall = summary['overall']
-    print(f"  Total Questions: {overall['num_questions']}")
-    print(f"  Total Correct: {overall['num_correct']}/{overall['num_questions']} ({overall['accuracy']:.1%})")
-    print(f"  Avg Branch Events: {overall['avg_branch_events_per_question']:.1f}")
-    print(f"  Total Tokens: {overall['total_tokens']:,}")
-    print(f"  Avg Tokens/Question: {overall['avg_tokens_per_question']:.1f}")
-    print(f"  Total Time: {overall['total_time']:.2f}s ({overall['total_time']/60:.1f} minutes)")
-    print(f"  Avg Time/Question: {overall['avg_time_per_question']:.2f}s")
-    print(f"  Overall Throughput: {overall['throughput_tokens_per_sec']:.1f} tokens/sec")
+    print(f"\nTotal Questions: {summary['num_questions']}")
+    print(f"Correct: {summary['num_correct']}/{summary['num_questions']} ({summary['accuracy']:.1%})")
+    print(f"Avg Individual Trace Accuracy: {summary['avg_individual_trace_accuracy']:.1%}")
+    print(f"Avg Branch Events: {summary['avg_branch_events_per_question']:.1f}")
+    print(f"Total Tokens: {summary['total_tokens']:,}")
+    print(f"Avg Tokens/Question: {summary['avg_tokens_per_question']:.1f}")
+    print(f"Total Time: {summary['total_time']:.2f}s ({summary['total_time']/60:.1f} minutes)")
+    print(f"Avg Time/Question: {summary['avg_time_per_question']:.2f}s")
+    print(f"Overall Throughput: {summary['throughput_tokens_per_sec']:.1f} tokens/sec")
     print("="*80)
 
 
 def save_results(
-    all_results: Dict[str, List[Dict[str, Any]]],
+    results: List[Dict[str, Any]],
     summary: Dict[str, Any],
     output_dir: str,
     args: argparse.Namespace
@@ -393,46 +344,46 @@ def save_results(
             'top_k': args.top_k,
             'max_tokens': args.max_tokens,
             'model_type': args.model_type,
-            'historical_stats_file': args.historical_stats
+            'historical_stats_file': args.historical_stats,
+            'dataset': 'GSM8k',
+            'split': 'test'
         },
-        'results': all_results,
+        'results': {'GSM8k': results},  # Wrap in dict for compatibility with visualization
         'summary': summary
     }
 
-    json_filename = os.path.join(output_dir, f"branching_sc_aime25_detailed_{timestamp}.json")
+    json_filename = os.path.join(output_dir, f"branching_sc_gsm8k_detailed_{timestamp}.json")
     with open(json_filename, 'w', encoding='utf-8') as f:
         json.dump(detailed_output, f, indent=2, ensure_ascii=False)
     print(f"\nDetailed results saved to: {json_filename}")
 
     # Save summary as CSV
     summary_rows = []
-    for dataset_name, results in all_results.items():
-        for i, result in enumerate(results):
-            genealogy_stats = result.get('branch_genealogy', {}).get('statistics', {})
+    for i, result in enumerate(results):
+        genealogy_stats = result.get('branch_genealogy', {}).get('statistics', {})
 
-            summary_rows.append({
-                'dataset': dataset_name,
-                'question_id': i,
-                'is_correct': result['is_correct'],
-                'ground_truth': result['ground_truth'],
-                'voted_answer': result['voted_answer'],
-                'num_valid_traces': result['num_valid_traces'],
-                'num_traces_generated': result['num_traces_generated'],
-                'individual_trace_accuracy': result['individual_trace_accuracy'],
-                'original_traces': genealogy_stats.get('original_traces', 0),
-                'branched_traces': genealogy_stats.get('branched_traces', 0),
-                'branch_events': genealogy_stats.get('total_branch_events', 0),
-                'total_tokens': result['statistics']['total_tokens'],
-                'total_time': result['statistics']['total_time'],
-            })
+        summary_rows.append({
+            'question_id': i,
+            'is_correct': result['is_correct'],
+            'ground_truth': result['ground_truth'],
+            'voted_answer': result['voted_answer'],
+            'num_valid_traces': result['num_valid_traces'],
+            'num_traces_generated': result['num_traces_generated'],
+            'individual_trace_accuracy': result['individual_trace_accuracy'],
+            'original_traces': genealogy_stats.get('original_traces', 0),
+            'branched_traces': genealogy_stats.get('branched_traces', 0),
+            'branch_events': genealogy_stats.get('total_branch_events', 0),
+            'total_tokens': result['statistics']['total_tokens'],
+            'total_time': result['statistics']['total_time'],
+        })
 
     df = pd.DataFrame(summary_rows)
-    csv_filename = os.path.join(output_dir, f"branching_sc_aime25_summary_{timestamp}.csv")
+    csv_filename = os.path.join(output_dir, f"branching_sc_gsm8k_summary_{timestamp}.csv")
     df.to_csv(csv_filename, index=False)
     print(f"Summary CSV saved to: {csv_filename}")
 
     # Save aggregate statistics
-    stats_filename = os.path.join(output_dir, f"branching_sc_aime25_stats_{timestamp}.json")
+    stats_filename = os.path.join(output_dir, f"branching_sc_gsm8k_stats_{timestamp}.json")
     with open(stats_filename, 'w', encoding='utf-8') as f:
         json.dump(summary, f, indent=2)
     print(f"Aggregate statistics saved to: {stats_filename}")
@@ -442,7 +393,7 @@ def save_results(
 
 
 def save_incremental_results(
-    all_results: Dict[str, List[Dict[str, Any]]],
+    results: List[Dict[str, Any]],
     output_dir: str,
     timestamp: str,
     args: argparse.Namespace
@@ -463,13 +414,15 @@ def save_incremental_results(
             'max_tokens': args.max_tokens,
             'model_type': args.model_type,
             'historical_stats_file': args.historical_stats,
+            'dataset': 'GSM8k',
+            'split': 'test',
             'status': 'in_progress'
         },
-        'results': all_results,
+        'results': {'GSM8k': results},
         'summary': None  # Will be computed at the end
     }
 
-    temp_filename = os.path.join(output_dir, f"branching_sc_aime25_detailed_{timestamp}{TEMP_RESULTS_SUFFIX}")
+    temp_filename = os.path.join(output_dir, f"branching_sc_gsm8k_detailed_{timestamp}{TEMP_RESULTS_SUFFIX}")
     with open(temp_filename, 'w', encoding='utf-8') as f:
         json.dump(temp_output, f, indent=2, ensure_ascii=False)
 
@@ -478,7 +431,6 @@ def save_incremental_results(
 
 def generate_question_visualizations(
     result: Dict[str, Any],
-    dataset_name: str,
     question_idx: int,
     viz_dir: str,
     timestamp: str
@@ -492,12 +444,12 @@ def generate_question_visualizations(
         )
 
         # Prepare paths
-        summary_path = os.path.join(viz_dir, f"summary_{dataset_name}_q{question_idx}_{timestamp}.png")
-        genealogy_path = os.path.join(viz_dir, f"genealogy_{dataset_name}_q{question_idx}_{timestamp}.png")
-        confidence_path = os.path.join(viz_dir, f"confidence_{dataset_name}_q{question_idx}_{timestamp}.png")
+        summary_path = os.path.join(viz_dir, f"summary_GSM8k_q{question_idx}_{timestamp}.png")
+        genealogy_path = os.path.join(viz_dir, f"genealogy_GSM8k_q{question_idx}_{timestamp}.png")
+        confidence_path = os.path.join(viz_dir, f"confidence_GSM8k_q{question_idx}_{timestamp}.png")
 
         # Generate 3 visualizations
-        create_per_problem_summary(result, dataset_name, question_idx, summary_path)
+        create_per_problem_summary(result, "GSM8k", question_idx, summary_path)
         create_genealogy_graph(
             result.get('branch_genealogy', {}),
             result.get('full_traces', []),
@@ -524,7 +476,7 @@ def generate_question_visualizations(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Branching Self-Consistency on AIME 2025',
+        description='Branching Self-Consistency on GSM8k',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 
@@ -562,13 +514,10 @@ def main():
                        help='Maximum tokens per generation')
 
     # Dataset selection
-    parser.add_argument('--dataset', type=str, default=None,
-                       choices=['AIME2025-I', 'AIME2025-II'],
-                       help='Run on specific dataset only (default: both)')
     parser.add_argument('--start_idx', type=int, default=0,
                        help='Start from this question index')
     parser.add_argument('--end_idx', type=int, default=None,
-                       help='End at this question index')
+                       help='End at this question index (default: all 1319 questions)')
 
     # Output configuration
     parser.add_argument('--output_dir', type=str, default="outputs_sc",
@@ -596,7 +545,7 @@ def main():
 
     # Print header
     print("\n" + "="*80)
-    print("BRANCHING SELF-CONSISTENCY ON AIME 2025")
+    print("BRANCHING SELF-CONSISTENCY ON GSM8K")
     print("="*80)
     print(f"Model: {args.model}")
     print(f"Start traces: {args.start_traces}, Max traces: {args.max_traces}")
@@ -606,9 +555,10 @@ def main():
     print(f"GPUs: {args.tensor_parallel_size}")
     print("="*80 + "\n")
 
-    # Load datasets
-    print("Loading AIME 2025 datasets...")
-    datasets = load_aime25(args.dataset)
+    # Load dataset
+    print("Loading GSM8k test set...")
+    dataset = load_gsm8k(split="test")
+    print(f"Loaded {len(dataset)} questions")
 
     # Initialize model
     print(f"\nInitializing DeepThinkLLM with {args.model}...")
@@ -628,93 +578,90 @@ def main():
         logprobs=20,
     )
 
-    # Process all datasets
-    all_results = {}
+    # Process questions
+    results = []
 
-    for dataset_name, dataset in datasets:
-        print(f"\n{'='*80}")
-        print(f"Processing {dataset_name} ({len(dataset)} questions)")
-        print('='*80)
+    # Determine range
+    start = args.start_idx
+    end = args.end_idx if args.end_idx is not None else len(dataset)
 
-        dataset_results = []
+    print(f"\nProcessing questions {start} to {end-1} ({end-start} total)")
+    print('='*80)
 
-        # Determine range
-        start = args.start_idx
-        end = args.end_idx if args.end_idx is not None else len(dataset)
+    for i in tqdm(range(start, end), desc="GSM8k"):
+        question_data = dataset[i]
+        question = question_data['question']
+        answer_text = question_data['answer']
 
-        for i in tqdm(range(start, end), desc=f"{dataset_name}"):
-            question_data = dataset[i]
-            question = question_data['question']
-            ground_truth = str(question_data.get('answer', '')).strip()
+        # Extract ground truth number from answer
+        ground_truth = extract_gsm8k_ground_truth(answer_text)
 
-            # Get historical average tokens
-            avg_tokens = get_average_tokens(historical_stats, dataset_name, i)
+        # Get historical average tokens
+        avg_tokens = get_average_tokens(historical_stats, i)
 
-            print(f"\n{'='*60}")
-            print(f"Question {i+1}/{len(dataset)}")
-            print('='*60)
-            print(f"Q: {question[:150]}...")
-            print(f"Historical avg tokens: {avg_tokens}")
+        print(f"\n{'='*60}")
+        print(f"Question {i+1}/{len(dataset)}")
+        print('='*60)
+        print(f"Q: {question[:150]}...")
+        print(f"GT: {ground_truth}")
+        print(f"Historical avg tokens: {avg_tokens}")
 
-            try:
-                # Process question
-                result = process_question_branching(
-                    deep_llm=deep_llm,
-                    question=question,
-                    ground_truth=ground_truth,
-                    start_traces=args.start_traces,
-                    max_traces=args.max_traces,
-                    selected_percent=args.selected_percent,
-                    n_iterations=args.n_iterations,
-                    branch_goal=args.branch_goal,
-                    average_tokens=avg_tokens,
-                    sampling_params=sampling_params,
-                    model_type=args.model_type
-                )
+        try:
+            # Process question
+            result = process_question_branching(
+                deep_llm=deep_llm,
+                question=question,
+                ground_truth=ground_truth,
+                start_traces=args.start_traces,
+                max_traces=args.max_traces,
+                selected_percent=args.selected_percent,
+                n_iterations=args.n_iterations,
+                branch_goal=args.branch_goal,
+                average_tokens=avg_tokens,
+                sampling_params=sampling_params,
+                model_type=args.model_type
+            )
 
-                dataset_results.append(result)
+            results.append(result)
 
-                # Print summary
-                print_question_summary(i, result)
+            # Print summary
+            print_question_summary(i, result)
 
-                # Save incremental results
-                all_results[dataset_name] = dataset_results
-                temp_file = save_incremental_results(all_results, args.output_dir, timestamp, args)
-                print(f"  💾 Saved progress: {temp_file}")
+            # Save incremental results
+            temp_file = save_incremental_results(results, args.output_dir, timestamp, args)
+            print(f"  💾 Saved progress: {temp_file}")
 
-                # Generate visualizations for this question
-                print(f"  📊 Generating visualizations for Q{i}...")
-                viz_success = generate_question_visualizations(
-                    result, dataset_name, i, viz_dir, timestamp
-                )
-                if viz_success:
-                    print(f"  ✓ Visualizations created")
+            # Generate visualizations for this question
+            print(f"  📊 Generating visualizations for Q{i}...")
+            viz_success = generate_question_visualizations(
+                result, i, viz_dir, timestamp
+            )
+            if viz_success:
+                print(f"  ✓ Visualizations created")
 
-            except KeyboardInterrupt:
-                print("\n\n⚠️  Interrupted by user (Ctrl+C)")
-                print(f"Progress saved: {len(dataset_results)}/{end-start} questions completed")
-                raise
-            except Exception as e:
-                print(f"\n❌ Error processing Q{i}: {e}")
-                print(f"Continuing with next question...")
-                import traceback
-                traceback.print_exc()
-                continue
-
-        all_results[dataset_name] = dataset_results
+        except KeyboardInterrupt:
+            print("\n\n⚠️  Interrupted by user (Ctrl+C)")
+            print(f"Progress saved: {len(results)}/{end-start} questions completed")
+            raise
+        except Exception as e:
+            print(f"\n❌ Error processing Q{i}: {e}")
+            print(f"Continuing with next question...")
+            import traceback
+            traceback.print_exc()
+            continue
 
     # Generate summary
     print("\n\nGenerating summary report...")
-    summary = generate_summary_report(all_results)
+    summary = generate_summary_report(results)
 
     # Print final summary
     print_final_summary(summary)
 
     # Save final results
-    json_filepath = save_results(all_results, summary, args.output_dir, args)
+    json_filepath = save_results(results, summary, args.output_dir, args)
 
     # Remove temporary file
-    temp_filepath = os.path.join(args.output_dir, f"branching_sc_aime25_detailed_{timestamp}{TEMP_RESULTS_SUFFIX}")
+    temp_filepath = os.path.join(args.output_dir, f"branching_sc_gsm8k_detailed_{timestamp}{TEMP_RESULTS_SUFFIX}")
     if os.path.exists(temp_filepath):
         os.remove(temp_filepath)
         print(f"Removed temporary file: {temp_filepath}")
@@ -730,12 +677,12 @@ def main():
 
         # Token usage plot
         token_path = os.path.join(viz_dir, f"token_usage_{timestamp}.png")
-        create_token_usage_plot(all_results, token_path)
+        create_token_usage_plot({'GSM8k': results}, token_path)
         print(f"  ✓ Token usage plot: {token_path}")
 
         # Accuracy analysis plot
         accuracy_path = os.path.join(viz_dir, f"accuracy_analysis_{timestamp}.png")
-        create_accuracy_analysis_plot(all_results, accuracy_path)
+        create_accuracy_analysis_plot({'GSM8k': results}, accuracy_path)
         print(f"  ✓ Accuracy analysis plot: {accuracy_path}")
 
     except ImportError:

@@ -3,80 +3,61 @@
 ## Installation
 
 ```bash
-pip install -r requirements.txt
+git clone <repository>
+cd deepconf_branching
+pip install -e .
 ```
 
-## Run Experiments
+## Basic Usage
 
-### Test on One Question (~2 min)
-
+### Single Question Testing
 ```bash
-python scripts/test_sc_single_question.py
+# Traditional SC on one question
+python scripts/run_experiment.py \
+    --experiment traditional \
+    --dataset AIME2025-I \
+    --question_id 0 \
+    --num_traces 64
+
+# Branching SC on one question  
+python scripts/run_experiment.py \
+    --experiment branching \
+    --dataset AIME2025-I \
+    --question_id 0 \
+    --start_traces 8 \
+    --max_traces 32
 ```
 
-### Full Experiment (~30-40 min)
-
+### Full Dataset Processing
 ```bash
-# Both AIME25-I and AIME25-II with 64 traces
-python scripts/run_traditional_sc_aime25.py --num_traces 64
+# Traditional SC on full AIME25-I
+python scripts/run_experiment.py \
+    --experiment traditional \
+    --dataset AIME2025-I \
+    --num_traces 64
 
-# Single dataset only
-python scripts/run_traditional_sc_aime25.py --dataset AIME2025-I --num_traces 64
+# Branching SC (requires historical stats first)
+python scripts/compute_stats.py --dataset AIME2025-I --num_samples 2
 
-# Quick test (first 5 questions)
-python scripts/run_traditional_sc_aime25.py --end_idx 5 --num_traces 16
+python scripts/run_experiment.py \
+    --experiment branching \
+    --dataset AIME2025-I \
+    --start_traces 8 \
+    --max_traces 32 \
+    --historical_stats historical_stats/aime2025_i_token_stats_latest.json
 ```
 
-## Visualize & Analyze
-
-### Trace Confidence Evolution
-
+### Visualizations
 ```bash
-python scripts/visualize_trace_confidence.py --qid 0 --num_traces 16
+python scripts/visualize_results.py \
+    --results outputs/experiment_detailed_TIMESTAMP.json
 ```
 
-### Analyze Results
+## Key Features
 
-```bash
-python scripts/analyze_sc_results.py outputs_sc/traditional_sc_aime25_detailed_*.json
-python scripts/visualize_sc_results.py outputs_sc/traditional_sc_aime25_detailed_*.json
-```
+- Single question OR full dataset processing
+- Incremental saving (Ctrl+C safe)
+- Automatic visualization generation
+- Works with AIME2025-I, AIME2025-II, GSM8k, or both AIME datasets
 
-## Output Files
-
-Results saved to `outputs_sc/`:
-- `*_detailed_*.json` - Full trace data
-- `*_summary_*.csv` - Spreadsheet format
-- `*_stats_*.json` - Statistics
-- `trace_confidence_*.png` - Graphs
-
-## Common Options
-
-```bash
---num_traces 64          # Number of reasoning paths
---temperature 1.0        # Sampling temperature
---dataset AIME2025-I     # Which dataset
---qid 0                  # Specific question ID
---end_idx 5              # First N questions only
---tensor_parallel_size 4 # Number of GPUs
-```
-
-## Troubleshooting
-
-**Out of memory:**
-```bash
-python scripts/run_traditional_sc_aime25.py --num_traces 32
-```
-
-**Slow generation:**
-```bash
-nvidia-smi  # Check GPU utilization
-```
-
-**Module not found:**
-Make sure you run from project root, not `scripts/` directory.
-
-## More Info
-
-- **SC Details**: See `SELF_CONSISTENCY.md`
-- **Visualization**: See `TRACE_VISUALIZATION.md`
+See docs/EXPERIMENT_REFERENCE.md for all parameters.

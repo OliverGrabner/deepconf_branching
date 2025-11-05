@@ -1,6 +1,8 @@
 """
 Traditional Self-Consistency on AIME 2025 I and II
 
+⚠️  DEPRECATED: Use scripts/run_experiment.py instead.
+
 This script implements traditional self-consistency (Wang et al., 2022):
 1. Generate N reasoning paths for each question
 2. Extract answers from each path
@@ -10,6 +12,16 @@ This script implements traditional self-consistency (Wang et al., 2022):
 Usage:
     python run_traditional_sc_aime25.py --model deepseek-ai/DeepSeek-R1-0528-Qwen3-8B --num_traces 64
 """
+
+
+import warnings
+warnings.warn(
+    "\n⚠️  DEPRECATED: run_traditional_sc_aime25.py is deprecated.\n"
+    "Use: python scripts/run_experiment.py --experiment traditional --dataset AIME2025-I\n"
+    "See docs/QUICKSTART.md for details.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 import os
 import sys

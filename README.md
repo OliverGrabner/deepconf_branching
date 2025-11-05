@@ -1,6 +1,6 @@
 # DeepConf: Deep Thinking LLM Framework
 
-A powerful framework for enhanced LLM reasoning with **self-consistency**, **confidence-based voting**, and **trace analysis**. Supports both online (confidence-based early stopping) and offline (batch generation) modes.
+A powerful framework for enhanced LLM reasoning with **traditional self-consistency** and **branching self-consistency**. Features include confidence-based voting, trace analysis, and comprehensive visualization.
 
 ## 🚀 Quick Start
 
@@ -8,11 +8,26 @@ A powerful framework for enhanced LLM reasoning with **self-consistency**, **con
 # Install dependencies
 pip install -r requirements.txt
 
-# Test on a single question
-python scripts/test_sc_single_question.py
+# Test traditional SC on single question
+python scripts/run_experiment.py \
+    --experiment traditional \
+    --dataset AIME2025-I \
+    --question_id 0 \
+    --num_traces 64
 
-# Run full experiment on AIME 2025
-python scripts/run_traditional_sc_aime25.py --num_traces 64
+# Test branching SC on single question
+python scripts/run_experiment.py \
+    --experiment branching \
+    --dataset AIME2025-I \
+    --question_id 0 \
+    --start_traces 8 \
+    --max_traces 32
+
+# Run on full dataset
+python scripts/run_experiment.py \
+    --experiment traditional \
+    --dataset AIME2025-I \
+    --num_traces 64
 ```
 
 ## 📋 Table of Contents
@@ -30,22 +45,26 @@ python scripts/run_traditional_sc_aime25.py --num_traces 64
 
 ## ✨ Features
 
-### Core Framework
-- **7 Voting Strategies**: From simple majority to confidence-weighted voting
-- **Dual Processing Modes**: Online (early stopping) and offline (batch) generation
-- **Memory Optimized**: Stores only confidence values, not full logprobs
-- **vLLM Backend**: Efficient parallel generation with prefix caching
+### Unified Experiment Runner
+- **Single Entry Point**: One script for all experiment types (traditional/branching, AIME/GSM8k)
+- **Single Question Testing**: Test on one question without running full dataset
+- **Incremental Saving**: Progress saved after every question (Ctrl+C safe)
+- **Auto-visualization**: Graphs generated immediately after each question
 
-### Self-Consistency on AIME 2025
-- **Traditional SC**: Pure majority voting on challenging math problems
-- **Comprehensive Metrics**: Accuracy, tokens, throughput, per-question analysis
-- **Multi-format Output**: JSON (detailed), CSV (spreadsheet), JSON (stats)
+### Two SC Modes
+- **Traditional SC**: Standard majority voting (N traces, simple vote)
+- **Branching SC**: Dynamic branching from high-confidence traces (S→M traces)
 
-### Trace Visualization
-- **Confidence Evolution**: Track tail confidence as each trace generates
-- **4-Panel Graphs**: All traces, correct only, incorrect only, distribution
-- **ASCII Fallback**: Works without matplotlib
-- **Research Ready**: High-res graphs (300 DPI) for publications
+### Datasets Supported
+- **AIME 2025-I & II**: Math olympiad problems (30 questions total)
+- **GSM8k**: Grade school math (1,319 questions)
+- Both single-question and batch processing modes
+
+### Visualization & Analysis
+- **Branching-specific**: Genealogy trees, confidence evolution with branch points, 4-panel summaries
+- **Traditional SC**: Consensus distribution, vote analysis
+- **Dataset-wide**: Token usage, accuracy comparisons
+- Auto-generated after each question or on-demand
 
 ## 📦 Installation
 
@@ -79,103 +98,134 @@ export CUDA_VISIBLE_DEVICES="0,1,2,3"
 
 ```
 deepconf_branching/
-├── README.md                      # This file
-├── requirements.txt               # Python dependencies
-├── setup.py                       # Package setup
+├── README.md                            # This file
+├── requirements.txt                     # Python dependencies
+├── setup.py                             # Package setup
 │
-├── deepconf/                      # Core package
-│   ├── __init__.py               # Public API
-│   ├── wrapper.py                # DeepThinkLLM class
-│   ├── utils.py                  # Utilities and voting methods
-│   └── outputs.py                # Output dataclasses
+├── deepconf/                            # Core package
+│   ├── __init__.py                     # Public API
+│   ├── wrapper.py                      # DeepThinkLLM class
+│   ├── branching.py                    # Branching manager
+│   ├── utils.py                        # Utilities (AIME + GSM8k)
+│   └── outputs.py                      # Output dataclasses
 │
-├── scripts/                       # Executable scripts
-│   ├── run_traditional_sc_aime25.py      # Main SC experiment
-│   ├── test_sc_single_question.py        # Quick test
-│   ├── analyze_sc_results.py             # Result analysis
-│   ├── visualize_sc_results.py           # ASCII visualization
-│   ├── visualize_trace_confidence.py     # Confidence graphs
-│   └── run_sc_experiments.sh             # Automated experiments
+├── scripts/                             # Main scripts (USE THESE)
+│   ├── run_experiment.py               # 🌟 UNIFIED RUNNER (start here)
+│   ├── visualize_results.py            # Unified visualization
+│   ├── compute_stats.py                # Historical token statistics
+│   ├── experiment_utils.py             # Shared utilities
+│   ├── run_branching_sc_aime25.py      # [DEPRECATED] Use run_experiment.py
+│   ├── run_branching_sc_gsm8k.py       # [DEPRECATED] Use run_experiment.py
+│   ├── run_traditional_sc_aime25.py    # [DEPRECATED] Use run_experiment.py
+│   ├── visualize_branching_results.py  # [DEPRECATED] Use visualize_results.py
+│   └── visualize_sc_results.py         # [DEPRECATED] Use visualize_results.py
 │
-├── examples/                      # Example usage
-│   ├── example_offline.py        # Offline mode example
-│   └── example_online.py         # Online mode example
+├── docs/                                # Documentation
+│   ├── QUICKSTART.md                   # Getting started guide
+│   └── (more docs coming soon)
 │
-└── docs/                          # Documentation
-    ├── QUICKSTART.md             # Quick reference guide
-    ├── SELF_CONSISTENCY.md       # Traditional SC guide
-    ├── TRACE_VISUALIZATION.md    # Visualization guide
-    ├── IMPLEMENTATION.md         # Technical details
-    └── CHANGELOG.md              # Recent changes
+├── archive/                             # Old files (kept for reference)
+│   ├── scripts/                        # Replaced scripts
+│   ├── examples/                       # Example files
+│   ├── docs/                           # Historical documentation
+│   └── README.md                       # What's in the archive
+│
+└── DATA_AND_VISUALIZATION_SUMMARY.md    # Detailed output reference
 ```
+
+**Key Change**: Use `scripts/run_experiment.py` as the single entry point for all experiments!
 
 ## 🎯 Usage
 
-### Traditional Self-Consistency
+### Unified Experiment Runner
 
-Run standard self-consistency on AIME 2025 datasets:
+**Single entry point for everything:**
 
 ```bash
-# Standard run (64 traces on both AIME25-I and AIME25-II)
-python scripts/run_traditional_sc_aime25.py --num_traces 64
-
-# Single dataset
-python scripts/run_traditional_sc_aime25.py --dataset AIME2025-I --num_traces 64
-
-# Quick test (first 5 questions)
-python scripts/run_traditional_sc_aime25.py --end_idx 5 --num_traces 32
+python scripts/run_experiment.py \
+    --experiment <traditional|branching> \
+    --dataset <AIME2025-I|AIME2025-II|gsm8k|both> \
+    [--question_id N]  # Optional: test single question
 ```
 
-**Output** (in `outputs_sc/`):
-- `traditional_sc_aime25_detailed_*.json` - Full trace data
-- `traditional_sc_aime25_summary_*.csv` - Spreadsheet format
-- `traditional_sc_aime25_stats_*.json` - Aggregate statistics
+### Examples
 
-### Confidence Visualization
-
-Track and graph confidence evolution for each trace:
-
+#### Single Question Testing (Fast)
 ```bash
-# Visualize a single question
-python scripts/visualize_trace_confidence.py \
-    --qid 0 \
+# Traditional SC on one question
+python scripts/run_experiment.py \
+    --experiment traditional \
     --dataset AIME2025-I \
-    --num_traces 16
+    --question_id 0 \
+    --num_traces 64
+
+# Branching SC on one question
+python scripts/run_experiment.py \
+    --experiment branching \
+    --dataset AIME2025-I \
+    --question_id 0 \
+    --start_traces 8 \
+    --max_traces 32
 ```
 
-**Output** (4-panel graph):
-1. All traces (green=correct, red=incorrect)
-2. Correct traces only
-3. Incorrect traces only
-4. Final confidence histogram
+#### Full Dataset Processing
+```bash
+# Traditional SC on full AIME25-I
+python scripts/run_experiment.py \
+    --experiment traditional \
+    --dataset AIME2025-I \
+    --num_traces 64
 
-### Result Analysis
+# Branching SC (requires historical stats first)
+python scripts/compute_stats.py --dataset AIME2025-I --num_samples 2
 
-Analyze patterns in your SC results:
+python scripts/run_experiment.py \
+    --experiment branching \
+    --dataset AIME2025-I \
+    --start_traces 8 \
+    --max_traces 32 \
+    --historical_stats historical_stats/aime2025_i_token_stats_latest.json
+```
+
+#### GSM8k (Batch Processing)
+```bash
+# GSM8k traditional SC (first 100 questions)
+python scripts/run_experiment.py \
+    --experiment traditional \
+    --dataset gsm8k \
+    --num_traces 64 \
+    --start_idx 0 \
+    --end_idx 100
+```
+
+**Output** (in `outputs/`):
+- `<experiment>_sc_detailed_*.json` - Full trace data
+- `<experiment>_sc_summary_*.csv` - Spreadsheet format
+- `<experiment>_sc_stats_*.json` - Aggregate statistics
+- `visualizations/` - Auto-generated plots (3 per question + 2 dataset-wide)
+
+### Visualizing Results
 
 ```bash
-# Deep analysis
-python scripts/analyze_sc_results.py outputs_sc/traditional_sc_aime25_detailed_*.json
+# Visualize all questions
+python scripts/visualize_results.py \
+    --results outputs/experiment_detailed_20250115.json
 
-# ASCII visualization
-python scripts/visualize_sc_results.py outputs_sc/traditional_sc_aime25_detailed_*.json
+# Visualize single question only
+python scripts/visualize_results.py \
+    --results outputs/experiment_detailed_20250115.json \
+    --question_id 0
 ```
-
-**Insights:**
-- Vote consensus vs correctness
-- Individual trace accuracy vs voting accuracy
-- Answer diversity patterns
-- Interesting success/failure cases
 
 ## 📚 Documentation
 
-Simple guides in [`docs/`](docs/):
-
 | Document | Description |
 |----------|-------------|
-| [**QUICKSTART.md**](docs/QUICKSTART.md) | Quick reference - commands and options |
-| [**SELF_CONSISTENCY.md**](docs/SELF_CONSISTENCY.md) | SC implementation on AIME 2025 |
-| [**TRACE_VISUALIZATION.md**](docs/TRACE_VISUALIZATION.md) | Confidence tracking and graphs |
+| [**docs/QUICKSTART.md**](docs/QUICKSTART.md) | Getting started guide |
+| [**DATA_AND_VISUALIZATION_SUMMARY.md**](DATA_AND_VISUALIZATION_SUMMARY.md) | Complete output/data reference |
+| [**archive/README.md**](archive/README.md) | What's in the archive |
+
+**Old documentation** (pre-refactor) is in `archive/docs/` for reference.
 
 ## 💡 Examples
 
@@ -377,12 +427,34 @@ MIT License - see LICENSE file for details.
 
 **Quick Links:**
 - [📖 Quick Start Guide](docs/QUICKSTART.md)
-- [🧮 Self-Consistency Guide](docs/SELF_CONSISTENCY.md)
-- [📊 Visualization Guide](docs/TRACE_VISUALIZATION.md)
+- [📊 Data & Visualization Reference](DATA_AND_VISUALIZATION_SUMMARY.md)
+- [🗂️ Archive (old files)](archive/README.md)
 
 **Ready to start?**
 
 ```bash
 pip install -r requirements.txt
-python scripts/test_sc_single_question.py
+
+# Test on single question (fastest way to verify setup)
+python scripts/run_experiment.py \
+    --experiment traditional \
+    --dataset AIME2025-I \
+    --question_id 0 \
+    --num_traces 64
 ```
+
+## 🔄 Migration from Old Scripts
+
+If you were using the old scripts, here's how to migrate:
+
+| Old Script | New Command |
+|------------|-------------|
+| `run_traditional_sc_aime25.py` | `run_experiment.py --experiment traditional --dataset AIME2025-I` |
+| `run_branching_sc_aime25.py` | `run_experiment.py --experiment branching --dataset AIME2025-I` |
+| `run_branching_sc_gsm8k.py` | `run_experiment.py --experiment branching --dataset gsm8k` |
+| `test_sc_single_question.py` | `run_experiment.py --experiment traditional --question_id 0` |
+| `test_branching_single_question.py` | `run_experiment.py --experiment branching --question_id 0` |
+| `visualize_branching_results.py` | `visualize_results.py` (auto-detects type) |
+| `compute_historical_stats*.py` | `compute_stats.py --dataset <name>` |
+
+**Old scripts still work** but are deprecated. See [archive/README.md](archive/README.md) for details.

@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 
 def extract_answer(text: str) -> Optional[str]:
-    """Extract boxed answer from text"""
+    """Extract boxed answer from text (for AIME/math problems)"""
     if "boxed" in text:
         ans = text.split("boxed")[-1]
         if len(ans) == 0:
@@ -37,6 +37,34 @@ def extract_answer(text: str) -> Optional[str]:
     return None
 
 
+def extract_answer_gsm8k(text: str) -> Optional[str]:
+    """
+    Extract numerical answer from GSM8k format text
+
+    GSM8k answers are formatted as: "reasoning ... #### <number>"
+    If #### is present, extract the number after it.
+    Otherwise, extract the last number in the text.
+    """
+    import re
+
+    # Method 1: Look for #### marker (standard GSM8k format)
+    if "####" in text:
+        parts = text.split("####")
+        if len(parts) > 1:
+            answer_text = parts[-1].strip()
+            # Extract first number after ####
+            numbers = re.findall(r'-?\d+\.?\d*', answer_text)
+            if numbers:
+                return numbers[0]
+
+    # Method 2: Extract last number in text (fallback)
+    numbers = re.findall(r'-?\d+\.?\d*', text)
+    if numbers:
+        return numbers[-1]
+
+    return None
+
+
 def quick_parse(text: str) -> str:
     """Parse LaTeX text content"""
     if '\\text{' in text and '}' in text:
@@ -55,12 +83,45 @@ def quick_parse(text: str) -> str:
 
 
 def equal_func(answer: str, ground_truth: str) -> bool:
-    """Check if answer equals ground truth"""
+    """Check if answer equals ground truth (for AIME/math problems)"""
     answer = quick_parse(answer)
     if len(answer) == 1 and answer.isalpha() and len(ground_truth) == 1 and ground_truth.isalpha():
         return answer.lower() == ground_truth.lower()
     else:
         return math_equal(answer, ground_truth)
+
+
+def equal_func_gsm8k(answer: str, ground_truth: str) -> bool:
+    """
+    Check if answer equals ground truth for GSM8k (numerical comparison)
+
+    Handles:
+    - Integer comparison
+    - Float comparison with tolerance
+    - String-to-number conversion
+    """
+    if answer is None or ground_truth is None:
+        return False
+
+    try:
+        # Remove commas from numbers
+        answer_clean = str(answer).replace(',', '').strip()
+        gt_clean = str(ground_truth).replace(',', '').strip()
+
+        # Convert to float for comparison
+        answer_num = float(answer_clean)
+        gt_num = float(gt_clean)
+
+        # Check if both are integers
+        if answer_num == int(answer_num) and gt_num == int(gt_num):
+            return int(answer_num) == int(gt_num)
+
+        # Float comparison with small tolerance
+        return abs(answer_num - gt_num) < 1e-6
+
+    except (ValueError, TypeError):
+        # Fallback to string comparison
+        return str(answer).strip() == str(ground_truth).strip()
 
 
 def compute_confidence(logprobs: List[Dict]) -> List[float]:
