@@ -464,10 +464,14 @@ def generate_question_visualizations(
                 create_confidence_evolution_plot
             )
 
-            # Prepare paths
-            summary_path = os.path.join(viz_dir, f"summary_{dataset_name}_q{question_idx}_{timestamp}.png")
-            genealogy_path = os.path.join(viz_dir, f"genealogy_{dataset_name}_q{question_idx}_{timestamp}.png")
-            confidence_path = os.path.join(viz_dir, f"confidence_{dataset_name}_q{question_idx}_{timestamp}.png")
+            # Create organized subdirectories for branching visualizations
+            question_dir = os.path.join(viz_dir, f"{dataset_name}_q{question_idx}")
+            os.makedirs(question_dir, exist_ok=True)
+
+            # Prepare paths in subdirectory
+            summary_path = os.path.join(question_dir, f"summary.png")
+            genealogy_path = os.path.join(question_dir, f"genealogy.png")
+            confidence_path = os.path.join(question_dir, f"confidence_evolution.png")
 
             # Generate 3 visualizations
             create_per_problem_summary(result, dataset_name, question_idx, summary_path)
@@ -490,6 +494,10 @@ def generate_question_visualizations(
             import matplotlib.pyplot as plt
             import numpy as np
             from collections import Counter
+
+            # Create organized subdirectory for traditional visualizations
+            question_dir = os.path.join(viz_dir, f"{dataset_name}_q{question_idx}")
+            os.makedirs(question_dir, exist_ok=True)
 
             # Create a 2-panel summary for traditional SC
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
@@ -542,7 +550,7 @@ def generate_question_visualizations(
 
             plt.tight_layout(rect=[0, 0, 1, 0.93])
 
-            summary_path = os.path.join(viz_dir, f"summary_{dataset_name}_q{question_idx}_{timestamp}.png")
+            summary_path = os.path.join(question_dir, f"summary.png")
             plt.savefig(summary_path, dpi=150, bbox_inches='tight')
             plt.close()
 

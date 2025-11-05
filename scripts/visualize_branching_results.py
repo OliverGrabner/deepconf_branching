@@ -319,15 +319,25 @@ def create_confidence_evolution_plot(
     def compute_tail_evolution(confs, tail_window=2048, step_size=100):
         positions = []
         tail_confs = []
-        for i in range(tail_window, len(confs), step_size):
+        # Start from 0 and sample every step_size tokens
+        for i in range(0, len(confs), step_size):
+            if i == 0:
+                # For position 0, just use the first token if available
+                if len(confs) > 0:
+                    positions.append(0)
+                    tail_confs.append(confs[0])
+                continue
             positions.append(i)
+            # Use tail window (all tokens from max(0, i-tail_window) to i)
             tail = confs[max(0, i-tail_window):i]
             tail_confs.append(np.mean(tail))
         return positions, tail_confs
 
     # Panel 1: All traces
     ax1 = axes[0, 0]
-    for trace in traces:
+
+    # Plot correct and incorrect traces separately for proper legend
+    for trace in correct_traces:
         confs = trace.get('confs', [])
         if not confs:
             continue
@@ -336,18 +346,31 @@ def create_confidence_evolution_plot(
         if not positions:
             continue
 
-        is_correct = trace.get('extracted_answer') == ground_truth or trace.get('answer') == ground_truth
-        color = 'green' if is_correct else 'red'
-        alpha = 0.6 if is_correct else 0.3
-        linewidth = 1
+        ax1.plot(positions, tail_confs, color='green', alpha=0.6, linewidth=1)
 
-        ax1.plot(positions, tail_confs, color=color, alpha=alpha, linewidth=linewidth)
+    for trace in incorrect_traces:
+        confs = trace.get('confs', [])
+        if not confs:
+            continue
+
+        positions, tail_confs = compute_tail_evolution(confs)
+        if not positions:
+            continue
+
+        ax1.plot(positions, tail_confs, color='red', alpha=0.3, linewidth=1)
 
     ax1.set_xlabel('Token Position')
     ax1.set_ylabel('Tail Confidence (mean of last N tokens)')
     ax1.set_title('All Traces (Green=Correct, Red=Incorrect)')
     ax1.grid(True, alpha=0.3)
-    ax1.legend(['Correct', 'Incorrect'])
+
+    # Create proper legend with actual plot handles
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='green', alpha=0.6, label='Correct'),
+        Patch(facecolor='red', alpha=0.3, label='Incorrect')
+    ]
+    ax1.legend(handles=legend_elements)
 
     # Panel 2: Correct traces only
     ax2 = axes[0, 1]
