@@ -400,11 +400,8 @@ class DeepThinkLLM:
             print(f"  Generating {manager.stride} tokens for {len(active_prompts)} traces...")
             chunk_start = time.time()
 
-            # Generate for all prompts in batch
-            batch_results = []
-            for i, single_prompt in enumerate(active_prompts):
-                result = self.llm.generate([single_prompt], chunk_params)
-                batch_results.append(result[0])  # Get first (and only) RequestOutput
+            # Generate for all prompts in batch (optimized for parallel processing)
+            batch_results = self.llm.generate(active_prompts, chunk_params)
 
             chunk_time = time.time() - chunk_start
             print(f"  Chunk generation took {chunk_time:.2f}s")
@@ -480,10 +477,8 @@ class DeepThinkLLM:
         final_params.n = 1
         final_params.max_tokens = sampling_params.max_tokens - manager.stride * n_iterations
 
-        final_results = []
-        for i, single_prompt in enumerate(active_prompts):
-            result = self.llm.generate([single_prompt], final_params)
-            final_results.append(result[0])
+        # Batch generate for all traces (optimized for parallel processing)
+        final_results = self.llm.generate(active_prompts, final_params)
 
         # Update traces with final generation
         from .utils import extract_answer
