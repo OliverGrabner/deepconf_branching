@@ -421,7 +421,7 @@ def main():
     # Setup GPU configuration
     # Only set CUDA_VISIBLE_DEVICES if not already set by user
     if "CUDA_VISIBLE_DEVICES" not in os.environ:
-        os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2"
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
