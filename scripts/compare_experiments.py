@@ -247,15 +247,15 @@ def print_summary(branching_metrics, traditional_metrics):
 
 
 def main():
-    # Hardcoded file paths
-    branching_file = "outputs/branching_sc_stats_20251105_163947.json"
-    traditional_file = "outputs/traditional_sc_stats_20251105_143014.json"
+    # Hardcoded file paths - prefer detailed versions for accurate token counts
+    branching_file = "outputs/branching_sc_detailed_20251105_163947.json"
+    traditional_file = "outputs/traditional_sc_detailed_20251105_143014.json"
 
-    # Alternative: try detailed versions if stats not found
+    # Fallback: try stats versions if detailed not found
     if not os.path.exists(branching_file):
-        branching_file = "outputs/branching_sc_detailed_20251105_163947.json"
+        branching_file = "outputs/branching_sc_stats_20251105_163947.json"
     if not os.path.exists(traditional_file):
-        traditional_file = "outputs/traditional_sc_detailed_20251105_143014.json"
+        traditional_file = "outputs/traditional_sc_stats_20251105_143014.json"
 
     print("="*80)
     print("LOADING EXPERIMENT RESULTS")
