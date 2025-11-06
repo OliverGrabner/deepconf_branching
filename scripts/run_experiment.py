@@ -419,9 +419,13 @@ def main():
         parser.error("Branching experiments require --historical_stats for batch processing")
 
     # Setup GPU configuration
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+    # Only set CUDA_VISIBLE_DEVICES if not already set by user
+    if "CUDA_VISIBLE_DEVICES" not in os.environ:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2"
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
+    print(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set')}")
     print(f"Available GPUs: {torch.cuda.device_count()}")
 
     # Create output directory and visualization directory
