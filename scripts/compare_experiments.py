@@ -36,47 +36,84 @@ def compute_metrics(data, experiment_type):
             - individual_trace_accuracy: % of all traces that are individually correct
             - total_tokens_generated: total tokens generated across all questions
     """
-    results = data.get('results', {})
+    # Check if this is a stats summary file (has 'overall' key) or detailed results file (has 'results' key)
+    if 'overall' in data:
+        # Stats summary format
+        overall = data.get('overall', {})
+        by_dataset = data.get('by_dataset', {})
 
-    majority_correct = 0
-    total_questions = 0
-    individual_correct = 0
-    total_traces = 0
-    total_tokens = 0
+        # Extract metrics directly from summary
+        majority_vote_acc = overall.get('accuracy', 0) * 100  # Convert to percentage
 
-    for dataset_name, questions in results.items():
-        for question_result in questions:
-            total_questions += 1
+        # For individual trace accuracy, aggregate from by_dataset
+        total_individual_acc = 0
+        dataset_count = 0
+        for dataset_name, dataset_stats in by_dataset.items():
+            total_individual_acc += dataset_stats.get('avg_individual_trace_accuracy', 0)
+            dataset_count += 1
 
-            # Majority vote accuracy
-            if question_result.get('is_correct', False):
-                majority_correct += 1
+        individual_trace_acc = (total_individual_acc / dataset_count * 100) if dataset_count > 0 else 0
 
-            # Individual trace accuracy
-            individual_acc = question_result.get('individual_trace_accuracy', 0)
-            num_traces = question_result.get('num_valid_traces', 0)
-            individual_correct += individual_acc * num_traces
-            total_traces += num_traces
+        # Get total tokens - use total_tokens for stats summary
+        total_tokens = overall.get('total_tokens', 0)
+        total_questions = overall.get('num_questions', 0)
 
-            # Tokens generated
-            stats = question_result.get('statistics', {})
-            if experiment_type == 'branching':
-                # Use total_tokens_generated (excludes inherited tokens)
-                total_tokens += stats.get('total_tokens_generated', stats.get('total_tokens', 0))
-            else:
-                # Traditional SC: total_tokens is correct
-                total_tokens += stats.get('total_tokens', 0)
+        # Estimate total traces (not directly in summary, compute from avg)
+        total_traces = 0
+        for dataset_name, dataset_stats in by_dataset.items():
+            total_traces += dataset_stats.get('num_questions', 0) * 32  # Approximate
 
-    majority_vote_acc = (majority_correct / total_questions * 100) if total_questions > 0 else 0
-    individual_trace_acc = (individual_correct / total_traces * 100) if total_traces > 0 else 0
+        return {
+            'majority_vote_accuracy': majority_vote_acc,
+            'individual_trace_accuracy': individual_trace_acc,
+            'total_tokens_generated': total_tokens,
+            'total_questions': total_questions,
+            'total_traces': total_traces
+        }
 
-    return {
-        'majority_vote_accuracy': majority_vote_acc,
-        'individual_trace_accuracy': individual_trace_acc,
-        'total_tokens_generated': total_tokens,
-        'total_questions': total_questions,
-        'total_traces': total_traces
-    }
+    else:
+        # Detailed results format
+        results = data.get('results', {})
+
+        majority_correct = 0
+        total_questions = 0
+        individual_correct = 0
+        total_traces = 0
+        total_tokens = 0
+
+        for dataset_name, questions in results.items():
+            for question_result in questions:
+                total_questions += 1
+
+                # Majority vote accuracy
+                if question_result.get('is_correct', False):
+                    majority_correct += 1
+
+                # Individual trace accuracy
+                individual_acc = question_result.get('individual_trace_accuracy', 0)
+                num_traces = question_result.get('num_valid_traces', 0)
+                individual_correct += individual_acc * num_traces
+                total_traces += num_traces
+
+                # Tokens generated
+                stats = question_result.get('statistics', {})
+                if experiment_type == 'branching':
+                    # Use total_tokens_generated (excludes inherited tokens)
+                    total_tokens += stats.get('total_tokens_generated', stats.get('total_tokens', 0))
+                else:
+                    # Traditional SC: total_tokens is correct
+                    total_tokens += stats.get('total_tokens', 0)
+
+        majority_vote_acc = (majority_correct / total_questions * 100) if total_questions > 0 else 0
+        individual_trace_acc = (individual_correct / total_traces * 100) if total_traces > 0 else 0
+
+        return {
+            'majority_vote_accuracy': majority_vote_acc,
+            'individual_trace_accuracy': individual_trace_acc,
+            'total_tokens_generated': total_tokens,
+            'total_questions': total_questions,
+            'total_traces': total_traces
+        }
 
 
 def create_comparison_plot(branching_metrics, traditional_metrics, output_path):
@@ -148,15 +185,18 @@ def create_comparison_plot(branching_metrics, traditional_metrics, output_path):
                 f'{int(val):,}', ha='center', va='bottom', fontsize=11, fontweight='bold')
 
     # Add summary statistics as text box
+    avg_tok_branch = branching_metrics['total_tokens_generated']/branching_metrics['total_questions'] if branching_metrics['total_questions'] > 0 else 0
+    avg_tok_trad = traditional_metrics['total_tokens_generated']/traditional_metrics['total_questions'] if traditional_metrics['total_questions'] > 0 else 0
+
     stats_text = (
         f"Branching SC:\n"
         f"  Questions: {branching_metrics['total_questions']}\n"
         f"  Total Traces: {branching_metrics['total_traces']}\n"
-        f"  Tokens/Question: {branching_metrics['total_tokens_generated']/branching_metrics['total_questions']:.0f}\n\n"
+        f"  Tokens/Question: {avg_tok_branch:.0f}\n\n"
         f"Traditional SC:\n"
         f"  Questions: {traditional_metrics['total_questions']}\n"
         f"  Total Traces: {traditional_metrics['total_traces']}\n"
-        f"  Tokens/Question: {traditional_metrics['total_tokens_generated']/traditional_metrics['total_questions']:.0f}"
+        f"  Tokens/Question: {avg_tok_trad:.0f}"
     )
 
     fig.text(0.99, 0.02, stats_text, fontsize=9, family='monospace',
@@ -181,7 +221,8 @@ def print_summary(branching_metrics, traditional_metrics):
     print(f"  Total Tokens Generated:      {branching_metrics['total_tokens_generated']:,}")
     print(f"  Total Questions:             {branching_metrics['total_questions']}")
     print(f"  Total Traces:                {branching_metrics['total_traces']}")
-    print(f"  Avg Tokens/Question:         {branching_metrics['total_tokens_generated']/branching_metrics['total_questions']:.0f}")
+    avg_tok_branch = branching_metrics['total_tokens_generated']/branching_metrics['total_questions'] if branching_metrics['total_questions'] > 0 else 0
+    print(f"  Avg Tokens/Question:         {avg_tok_branch:.0f}")
 
     print("\nTRADITIONAL SC:")
     print(f"  Majority Vote Accuracy:      {traditional_metrics['majority_vote_accuracy']:.2f}%")
@@ -189,7 +230,8 @@ def print_summary(branching_metrics, traditional_metrics):
     print(f"  Total Tokens Generated:      {traditional_metrics['total_tokens_generated']:,}")
     print(f"  Total Questions:             {traditional_metrics['total_questions']}")
     print(f"  Total Traces:                {traditional_metrics['total_traces']}")
-    print(f"  Avg Tokens/Question:         {traditional_metrics['total_tokens_generated']/traditional_metrics['total_questions']:.0f}")
+    avg_tok_trad = traditional_metrics['total_tokens_generated']/traditional_metrics['total_questions'] if traditional_metrics['total_questions'] > 0 else 0
+    print(f"  Avg Tokens/Question:         {avg_tok_trad:.0f}")
 
     print("\nCOMPARISON:")
     maj_diff = branching_metrics['majority_vote_accuracy'] - traditional_metrics['majority_vote_accuracy']
