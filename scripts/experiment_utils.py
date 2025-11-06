@@ -301,7 +301,13 @@ def generate_summary_report(all_results: Dict[str, List[Dict[str, Any]]], experi
         num_correct = sum(1 for r in results if r['is_correct'])
         accuracy = num_correct / num_questions if num_questions > 0 else 0.0
 
-        total_tokens = sum(r['statistics']['total_tokens'] for r in results)
+        # For branching, use total_tokens_generated (excludes inherited tokens)
+        # For traditional, use total_tokens (all newly generated)
+        if experiment_type == "branching":
+            total_tokens = sum(r['statistics'].get('total_tokens_generated', r['statistics']['total_tokens']) for r in results)
+        else:
+            total_tokens = sum(r['statistics']['total_tokens'] for r in results)
+
         total_time = sum(r['statistics']['total_time'] for r in results)
         avg_tokens = total_tokens / num_questions if num_questions > 0 else 0
         avg_time = total_time / num_questions if num_questions > 0 else 0
@@ -337,7 +343,13 @@ def generate_summary_report(all_results: Dict[str, List[Dict[str, Any]]], experi
     total_correct = sum(1 for r in all_question_results if r['is_correct'])
     overall_accuracy = total_correct / total_questions if total_questions > 0 else 0.0
 
-    overall_tokens = sum(r['statistics']['total_tokens'] for r in all_question_results)
+    # For branching, use total_tokens_generated (excludes inherited tokens)
+    # For traditional, use total_tokens (all newly generated)
+    if experiment_type == "branching":
+        overall_tokens = sum(r['statistics'].get('total_tokens_generated', r['statistics']['total_tokens']) for r in all_question_results)
+    else:
+        overall_tokens = sum(r['statistics']['total_tokens'] for r in all_question_results)
+
     overall_time = sum(r['statistics']['total_time'] for r in all_question_results)
 
     summary['overall'] = {
