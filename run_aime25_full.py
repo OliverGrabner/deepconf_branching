@@ -41,6 +41,12 @@ from typing import List, Dict, Optional
 from datetime import datetime
 
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend for server environments
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.lines import Line2D
+
 from datasets import load_dataset
 from transformers import AutoTokenizer
 from vllm import SamplingParams
@@ -441,7 +447,240 @@ def load_checkpoint(checkpoint_path: str) -> Optional[Dict]:
 
 
 ########################################
-# 6. Main runner
+# 6. Visualization functions
+########################################
+
+def plot_initial_traces_confidence(result_dict: Dict, problem_id: str, ground_truth: str,
+                                  save_dir: str = None) -> Optional[str]:
+    """
+    Plot confidence over time for ONLY initial traces (depth=0)
+
+    Args:
+        result_dict: Result dictionary from evaluation
+        problem_id: Problem identifier
+        ground_truth: Expected answer for coloring correct/incorrect
+        save_dir: Directory to save plot
+
+    Returns:
+        Path to saved plot or None
+    """
+    if 'result' not in result_dict:
+        return None
+
+    result = result_dict['result']
+    if not hasattr(result, 'all_traces') or not result.all_traces:
+        return None
+
+    # Filter for initial traces only (depth=0)
+    initial_traces = [t for t in result.all_traces if t.get('depth', 0) == 0]
+
+    if not initial_traces:
+        print(f"  No initial traces found for {problem_id}")
+        return None
+
+    fig, ax = plt.subplots(figsize=(14, 8))
+
+    # Plot each initial trace
+    for trace in initial_traces:
+        if 'confs' not in trace or not trace['confs']:
+            continue
+
+        confs = trace['confs']
+        positions = np.arange(len(confs))
+
+        # Determine if trace is correct
+        answer = trace.get('extracted_answer', '')
+        is_correct = str(answer).strip() == str(ground_truth).strip()
+
+        # Set style based on correctness
+        color = 'green' if is_correct else 'red'
+        alpha = 0.7
+        linewidth = 2 if is_correct else 1.5
+        linestyle = '-'  # Solid for all initial traces
+
+        label = f"{trace['trace_id']} ({'✓' if is_correct else '✗'})"
+        ax.plot(positions, confs, color=color, alpha=alpha, linewidth=linewidth,
+               linestyle=linestyle, label=label)
+
+    # Add average confidence line
+    all_confs = []
+    for trace in initial_traces:
+        if 'confs' in trace:
+            all_confs.extend(trace['confs'])
+
+    if all_confs:
+        avg_conf = np.mean(all_confs)
+        ax.axhline(y=avg_conf, color='blue', linestyle='--', alpha=0.5,
+                  label=f'Avg confidence: {avg_conf:.3f}')
+
+    # Styling
+    ax.set_xlabel('Token Position', fontsize=12)
+    ax.set_ylabel('Confidence Score', fontsize=12)
+    ax.set_title(f'Initial Traces Confidence - {problem_id}\n(Ground Truth: {ground_truth})',
+                fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='upper right', fontsize=10)
+
+    plt.tight_layout()
+
+    # Save plot
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f'{problem_id}_initial_only.png')
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        return save_path
+
+    plt.close(fig)
+    return None
+
+
+def plot_all_traces_with_branches(result_dict: Dict, problem_id: str, ground_truth: str,
+                                 save_dir: str = None) -> Optional[str]:
+    """
+    Plot ALL traces (initial + branches) on same graph with different styles
+
+    Args:
+        result_dict: Result dictionary from evaluation
+        problem_id: Problem identifier
+        ground_truth: Expected answer for coloring correct/incorrect
+        save_dir: Directory to save plot
+
+    Returns:
+        Path to saved plot or None
+    """
+    if 'result' not in result_dict:
+        return None
+
+    result = result_dict['result']
+    if not hasattr(result, 'all_traces') or not result.all_traces:
+        return None
+
+    fig, ax = plt.subplots(figsize=(16, 10))
+
+    # Define line styles based on depth
+    # NOTE: Current implementation only goes to depth 1 (no multi-level branching yet)
+    depth_styles = {
+        0: '-',   # Solid for initial traces
+        1: '--',  # Dashed for branch traces (depth 1 is max currently)
+    }
+
+    # Color maps for correct/incorrect (only need 2 levels)
+    correct_colors = ['darkgreen', 'green']  # Dark for initial, lighter for branches
+    incorrect_colors = ['darkred', 'red']    # Dark for initial, lighter for branches
+
+    # Track branch points for vertical lines
+    branch_points = []
+
+    # Group traces by depth for organized plotting
+    traces_by_depth = {}
+    for trace in result.all_traces:
+        depth = trace.get('depth', 0)
+        if depth not in traces_by_depth:
+            traces_by_depth[depth] = []
+        traces_by_depth[depth].append(trace)
+
+    # Plot traces by depth (initial first, then branches)
+    for depth in sorted(traces_by_depth.keys()):
+        for i, trace in enumerate(traces_by_depth[depth]):
+            if 'confs' not in trace or not trace['confs']:
+                continue
+
+            confs = trace['confs']
+
+            # Handle branch traces - align with parent
+            if depth > 0 and 'prefix_length' in trace:
+                # For branches, start plotting from branch point
+                prefix_len = trace['prefix_length']
+                positions = np.arange(prefix_len, prefix_len + len(confs))
+
+                # Record branch point
+                if 'branch_point' in trace:
+                    branch_points.append(trace['branch_point'])
+            else:
+                positions = np.arange(len(confs))
+
+            # Determine correctness
+            answer = trace.get('extracted_answer', '')
+            is_correct = str(answer).strip() == str(ground_truth).strip()
+
+            # Set style based on depth and correctness
+            linestyle = depth_styles.get(depth, ':')
+            if is_correct:
+                color = correct_colors[min(depth, len(correct_colors)-1)]
+                alpha = 0.8 - depth * 0.1
+            else:
+                color = incorrect_colors[min(depth, len(incorrect_colors)-1)]
+                alpha = 0.6 - depth * 0.1
+
+            linewidth = 2 - depth * 0.3
+
+            # Create label
+            depth_str = f"D{depth}"
+            correct_str = '✓' if is_correct else '✗'
+            parent_str = f" (from {trace.get('parent_id', 'N/A')})" if depth > 0 else ""
+            label = f"{trace['trace_id']} [{depth_str}] {correct_str}{parent_str}"
+
+            ax.plot(positions, confs, color=color, alpha=alpha, linewidth=linewidth,
+                   linestyle=linestyle, label=label)
+
+    # Add vertical lines at branch points
+    for bp in set(branch_points):
+        ax.axvline(x=bp, color='gray', linestyle=':', alpha=0.3)
+
+    # Add confidence threshold if present
+    if hasattr(result, 'config') and 'confidence_threshold' in result.config.get('branching_params', {}):
+        threshold = result.config['branching_params']['confidence_threshold']
+        ax.axhline(y=threshold, color='purple', linestyle='-.', alpha=0.5,
+                  label=f'Branch threshold: {threshold}')
+
+    # Styling
+    ax.set_xlabel('Token Position', fontsize=12)
+    ax.set_ylabel('Confidence Score', fontsize=12)
+    ax.set_title(f'All Traces with Branching - {problem_id}\n(Ground Truth: {ground_truth})',
+                fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+
+    # Create custom legend
+    legend_elements = [
+        Line2D([0], [0], color='green', lw=2, label='Correct', linestyle='-'),
+        Line2D([0], [0], color='red', lw=2, label='Incorrect', linestyle='-'),
+        Line2D([0], [0], color='black', lw=2, label='Initial (Depth 0)', linestyle='-'),
+        Line2D([0], [0], color='black', lw=2, label='Branches (Depth 1)', linestyle='--'),
+    ]
+
+    # Add first legend for line types
+    first_legend = ax.legend(handles=legend_elements, loc='upper left', fontsize=10)
+    ax.add_artist(first_legend)
+
+    # Add second legend for traces (make it scrollable if too many)
+    if len(result.all_traces) <= 15:
+        ax.legend(loc='upper right', fontsize=8, ncol=2)
+    else:
+        # For many traces, just show summary
+        summary_text = f"Total: {len(result.all_traces)} traces\n"
+        summary_text += f"Initial: {len(traces_by_depth.get(0, []))}\n"
+        summary_text += f"Branches: {sum(len(traces_by_depth.get(d, [])) for d in traces_by_depth if d > 0)}"
+        ax.text(0.98, 0.98, summary_text, transform=ax.transAxes,
+               fontsize=10, verticalalignment='top', horizontalalignment='right',
+               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.tight_layout()
+
+    # Save plot
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f'{problem_id}_all_traces.png')
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        return save_path
+
+    plt.close(fig)
+    return None
+
+
+########################################
+# 7. Main runner
 ########################################
 
 def main():
@@ -469,6 +708,8 @@ def main():
                        help='Resume from checkpoint file')
     parser.add_argument('--dry_run', action='store_true',
                        help='Run on first 3 problems only (for testing)')
+    parser.add_argument('--save_plots', action='store_true',
+                       help='Save confidence visualization plots for each problem')
 
     args = parser.parse_args()
 
@@ -527,6 +768,25 @@ def main():
                 )
 
             results.append(result)
+
+            # Save plots if requested (only for branching mode)
+            if args.save_plots and args.mode == 'branching':
+                plots_dir = os.path.join(args.output_dir, 'plots')
+                print(f"  Generating plots...")
+
+                # Plot initial traces only
+                plot_path = plot_initial_traces_confidence(
+                    result, problem['problem_id'], problem['expected_answer'], plots_dir
+                )
+                if plot_path:
+                    print(f"    Saved: {plot_path}")
+
+                # Plot all traces with branches
+                plot_path = plot_all_traces_with_branches(
+                    result, problem['problem_id'], problem['expected_answer'], plots_dir
+                )
+                if plot_path:
+                    print(f"    Saved: {plot_path}")
 
             # Save checkpoint after each problem
             save_checkpoint(args.output_dir, results, vars(args))
