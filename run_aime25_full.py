@@ -1,13 +1,13 @@
 """
 Full AIME 2025 Evaluation Script
 Evaluates on complete AIME 2025-I and AIME 2025-II datasets (30 problems total)
-Uses DeepSeek-R1-Distill-Qwen-32B model with optimized settings
+Uses DeepSeek-R1-Distill-Qwen-7B model with optimized settings
 
 Hardware Configuration:
-    - 4x NVIDIA RTX 5000 Ada (32GB VRAM each)
+    - 4x NVIDIA A5000 Ada (32GB VRAM each)
     - Total VRAM: 128GB
-    - Model: DeepSeek-R1-Distill-Qwen-32B (~32B parameters)
-    - Tensor Parallelism: 4 GPUs (32B model uses all 4)
+    - Model: DeepSeek-R1-Distill-Qwen-7B (~7B parameters)
+    - Tensor Parallelism: 2-4 GPUs (7B model can run on 2, but 4 gives better throughput)
 
 Dataset:
     - Source: opencompass/AIME2025 from HuggingFace
@@ -232,21 +232,22 @@ def calculate_confidence_correlation(traces: List[Dict], ground_truth: str) -> D
 # 4. Main evaluation functions
 ########################################
 
-def run_standard_eval(problem: Dict, model: str, budget: int, tensor_parallel_size: int = 1) -> Dict:
+def run_standard_eval(problem: Dict, model: str, budget: int, tensor_parallel_size: int = 1,
+                     gpu_memory_utilization: float = 0.85, max_num_seqs: int = 128) -> Dict:
     """Run standard DeepConf evaluation (no branching)"""
     print(f"\n{'='*80}")
     print(f"STANDARD MODE: {problem['problem_id']} ({problem['source']})")
     print(f"{'='*80}")
 
-    # Initialize with optimized settings for 32B model
+    # Initialize with optimized settings for 7B model
     deep_llm = DeepThinkLLM(
         model=model,
         enable_prefix_caching=True,
         trust_remote_code=True,
         tensor_parallel_size=tensor_parallel_size,
-        gpu_memory_utilization=0.85,  # 32B needs more headroom (~4.8GB per GPU)
-        max_num_seqs=32,               # Reduce for larger model
-        max_model_len=4096             # Match budget of 4000 tokens
+        gpu_memory_utilization=gpu_memory_utilization,
+        max_num_seqs=max_num_seqs,
+        max_model_len=32768            # 7B model can handle longer context
     )
 
     # Prepare prompt
@@ -261,7 +262,7 @@ def run_standard_eval(problem: Dict, model: str, budget: int, tensor_parallel_si
     sampling_params = SamplingParams(
         temperature=0.6,
         top_p=0.95,
-        max_tokens=4000,
+        max_tokens=32768,  # Allow long CoT reasoning
         logprobs=20,
     )
 
@@ -319,21 +320,22 @@ def run_standard_eval(problem: Dict, model: str, budget: int, tensor_parallel_si
     }
 
 
-def run_branching_eval(problem: Dict, model: str, initial: int, max_total: int, tensor_parallel_size: int = 1) -> Dict:
+def run_branching_eval(problem: Dict, model: str, initial: int, max_total: int, tensor_parallel_size: int = 1,
+                      gpu_memory_utilization: float = 0.85, max_num_seqs: int = 128) -> Dict:
     """Run branching DeepConf evaluation"""
     print(f"\n{'='*80}")
     print(f"BRANCHING MODE: {problem['problem_id']} ({problem['source']})")
     print(f"{'='*80}")
 
-    # Initialize with optimized settings for 32B model
+    # Initialize with optimized settings for 7B model
     branching_llm = BranchingDeepThinkLLM(
         model=model,
         enable_prefix_caching=True,
         trust_remote_code=True,
         tensor_parallel_size=tensor_parallel_size,
-        gpu_memory_utilization=0.85,  # 32B needs more headroom (~4.8GB per GPU)
-        max_num_seqs=32,               # Reduce for larger model
-        max_model_len=4096             # Match budget of 4000 tokens
+        gpu_memory_utilization=gpu_memory_utilization,
+        max_num_seqs=max_num_seqs,
+        max_model_len=32768            # 7B model can handle longer context
     )
 
     # Prepare prompt
@@ -348,7 +350,7 @@ def run_branching_eval(problem: Dict, model: str, initial: int, max_total: int, 
     sampling_params = SamplingParams(
         temperature=0.6,
         top_p=0.95,
-        max_tokens=4000,
+        max_tokens=32768,  # Allow long CoT reasoning
         logprobs=20,
     )
 
@@ -704,7 +706,7 @@ def main():
     parser = argparse.ArgumentParser(description='AIME 2025 Full Evaluation')
     parser.add_argument('--mode', type=str, choices=['standard', 'branching'], required=True,
                        help='Evaluation mode')
-    parser.add_argument('--model', type=str, default='deepseek-ai/DeepSeek-R1-Distill-Qwen-32B',
+    parser.add_argument('--model', type=str, default='deepseek-ai/DeepSeek-R1-Distill-Qwen-7B',
                        help='Model to use')
     parser.add_argument('--budget', type=int, default=16,
                        help='Number of traces for standard mode')
@@ -712,8 +714,12 @@ def main():
                        help='Initial branches for branching mode')
     parser.add_argument('--max_total_branches', type=int, default=16,
                        help='Max total branches for branching mode')
-    parser.add_argument('--tensor_parallel_size', type=int, default=4,
-                       help='Number of GPUs for tensor parallelism (default: 4 for 32B model)')
+    parser.add_argument('--tensor_parallel_size', type=int, default=2,
+                       help='Number of GPUs for tensor parallelism (default: 2 for 7B model)')
+    parser.add_argument('--gpu_memory_utilization', type=float, default=0.85,
+                       help='GPU memory utilization (0.0-1.0)')
+    parser.add_argument('--max_num_seqs', type=int, default=128,
+                       help='Maximum number of sequences to process in parallel')
     parser.add_argument('--subset', type=str, choices=['AIME2025-I', 'AIME2025-II'], default=None,
                        help='Run only on specific subset')
     parser.add_argument('--output_dir', type=str, default='results/aime25_full',
@@ -773,12 +779,13 @@ def main():
 
         try:
             if args.mode == 'standard':
-                result = run_standard_eval(problem, args.model, args.budget, args.tensor_parallel_size)
+                result = run_standard_eval(problem, args.model, args.budget, args.tensor_parallel_size,
+                                          args.gpu_memory_utilization, args.max_num_seqs)
             else:  # branching
                 result = run_branching_eval(
                     problem, args.model,
                     args.initial_branches, args.max_total_branches,
-                    args.tensor_parallel_size
+                    args.tensor_parallel_size, args.gpu_memory_utilization, args.max_num_seqs
                 )
 
             results.append(result)

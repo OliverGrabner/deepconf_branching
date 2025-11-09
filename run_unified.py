@@ -154,10 +154,16 @@ def main():
 
     # Model configuration
     parser.add_argument('--model', type=str,
-                       default='deepseek-ai/DeepSeek-R1-0528-Qwen3-8B',
+                       default='deepseek-ai/DeepSeek-R1-Distill-Qwen-7B',
                        help='Model name or path')
     parser.add_argument('--tensor_parallel_size', type=int, default=4,
                        help='Number of GPUs for tensor parallelism')
+    parser.add_argument('--gpu_memory_utilization', type=float, default=0.85,
+                       help='GPU memory utilization (0.0-1.0, lower = less memory)')
+    parser.add_argument('--max_num_seqs', type=int, default=128,
+                       help='Maximum number of sequences to process in parallel')
+    parser.add_argument('--max_model_len', type=int, default=32768,
+                       help='Maximum model context length')
 
     # Standard SC parameters
     parser.add_argument('--num_traces', type=int, default=32,
@@ -174,13 +180,13 @@ def main():
                        help='[Branching] Maximum branching depth')
 
     # Sampling parameters
-    parser.add_argument('--temperature', type=float, default=0.8,
+    parser.add_argument('--temperature', type=float, default=0.6,
                        help='Sampling temperature')
     parser.add_argument('--top_p', type=float, default=1.0,
                        help='Top-p sampling')
     parser.add_argument('--top_k', type=int, default=40,
                        help='Top-k sampling')
-    parser.add_argument('--max_tokens', type=int, default=8192,
+    parser.add_argument('--max_tokens', type=int, default=32768,
                        help='Maximum tokens per generation')
 
     # Output
@@ -226,8 +232,9 @@ def main():
             tensor_parallel_size=args.tensor_parallel_size,
             enable_prefix_caching=True,
             trust_remote_code=True,
-            max_model_len=81920,          
-            gpu_memory_utilization=0.95   
+            max_model_len=args.max_model_len,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            max_num_seqs=args.max_num_seqs
         )
     else:
         llm = DeepThinkLLM(
@@ -235,8 +242,9 @@ def main():
             tensor_parallel_size=args.tensor_parallel_size,
             enable_prefix_caching=True,
             trust_remote_code=True,
-            max_model_len=81920,
-            gpu_memory_utilization=0.95
+            max_model_len=args.max_model_len,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            max_num_seqs=args.max_num_seqs
         )
 
 
@@ -338,15 +346,25 @@ def main():
                 print(f"  Correct traces: {eval_metrics['correct_count']}/{eval_metrics['total_traces']}")
                 print(f"  Total tokens: {eval_metrics['total_tokens']:,}")
 
-                # Save incremental results
-                if (i - start_idx + 1) % 5 == 0:  # Save every 5 questions
-                    temp_file = os.path.join(
-                        args.output_dir,
-                        f"{args.mode}_{dataset_name}_{timestamp}_temp.json"
-                    )
-                    with open(temp_file, 'w') as f:
-                        json.dump(dataset_results, f, indent=2)
-                    print(f"  💾 Saved progress to {temp_file}")
+                # Save incremental results after EACH problem
+                temp_file = os.path.join(
+                    args.output_dir,
+                    f"{args.mode}_{dataset_name}_{timestamp}_temp.json"
+                )
+                with open(temp_file, 'w') as f:
+                    json.dump(dataset_results, f, indent=2)
+
+                # Also save pickle checkpoint for more robust recovery
+                checkpoint_file = os.path.join(args.output_dir, 'checkpoint.pkl')
+                with open(checkpoint_file, 'wb') as f:
+                    pickle.dump({
+                        'dataset_results': dataset_results,
+                        'args': vars(args),
+                        'last_idx': i,
+                        'timestamp': datetime.now().isoformat()
+                    }, f)
+
+                print(f"  💾 Saved progress (problem {i-start_idx+1}/{min(end_idx, len(dataset))-start_idx})")
 
             except Exception as e:
                 print(f"\n❌ Error processing question {i}: {e}")
