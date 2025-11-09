@@ -114,29 +114,56 @@ def load_aime25_dataset(subset: Optional[str] = None) -> List[Dict]:
 ########################################
 
 def extract_boxed_answer(text: str) -> str:
-    """Extract answer from \\boxed{...} notation"""
-    if "\\boxed" in text:
-        ans = text.split("\\boxed")[-1]
-        if len(ans) == 0:
-            return ""
-        elif ans[0] == "{":
-            stack = 1
-            a = ""
-            for c in ans[1:]:
-                if c == "{":
-                    stack += 1
-                    a += c
-                elif c == "}":
-                    stack -= 1
-                    if stack == 0:
-                        break
-                    a += c
-                else:
-                    a += c
-            return a.strip()
-        else:
-            a = ans.split("$")[0].strip()
-            return a.strip()
+    """Extract answer from various formats including \\boxed{...}"""
+    import re
+
+    if not text:
+        return ""
+
+    # Try standard boxed format first (with or without backslash)
+    patterns = [
+        r'\\boxed\{([^}]+)\}',  # \boxed{answer}
+        r'boxed\{([^}]+)\}',     # boxed{answer} without backslash
+    ]
+
+    for pattern in patterns:
+        matches = re.findall(pattern, text)
+        if matches:
+            # Return the last boxed answer found
+            answer = matches[-1].strip()
+            # Clean up any LaTeX artifacts
+            answer = answer.replace('$', '').strip()
+            return answer
+
+    # Try to find answer at the end of the text
+    lines = text.strip().split('\n')
+
+    # Check last few lines for answer patterns
+    for line in reversed(lines[-10:]):  # Check last 10 lines
+        line = line.strip()
+
+        # Pattern: "The answer is X" or "Therefore, X" or "Thus, X"
+        answer_patterns = [
+            r'(?:The answer is|Therefore,?|Thus,?|So,?|Hence,?)\s*[:=]?\s*(\d+)',
+            r'Final answer\s*[:=]\s*(\d+)',
+            r'^Answer\s*[:=]\s*(\d+)',  # "Answer: 123"
+            r'^=\s*(\d+)$',  # Just "= 123" on its own line
+            r'^\$?(\d+)\$?$',  # Just a number on its own line (possibly in math mode)
+        ]
+
+        for pattern in answer_patterns:
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+
+    # Look for the last number in the text (risky but might help)
+    numbers = re.findall(r'\b(\d{1,3})\b', text[-200:])  # AIME answers are 0-999
+    if numbers and len(lines) > 0:
+        # Only use this if the last line seems to be presenting an answer
+        last_line_lower = lines[-1].lower()
+        if any(word in last_line_lower for word in ['answer', 'therefore', 'thus', 'so', '=']):
+            return numbers[-1]
+
     return ""
 
 
