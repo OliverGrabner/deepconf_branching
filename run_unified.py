@@ -226,6 +226,8 @@ def main():
             tensor_parallel_size=args.tensor_parallel_size,
             enable_prefix_caching=True,
             trust_remote_code=True,
+            max_model_len=81920,          
+            gpu_memory_utilization=0.95   
         )
     else:
         llm = DeepThinkLLM(
@@ -233,7 +235,10 @@ def main():
             tensor_parallel_size=args.tensor_parallel_size,
             enable_prefix_caching=True,
             trust_remote_code=True,
+            max_model_len=81920,
+            gpu_memory_utilization=0.95
         )
+
 
 
     # Create sampling parameters
