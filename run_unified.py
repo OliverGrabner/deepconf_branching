@@ -225,15 +225,20 @@ def main():
             model=args.model,
             tensor_parallel_size=args.tensor_parallel_size,
             enable_prefix_caching=True,
-            trust_remote_code=True
+            trust_remote_code=True,
+            max_model_len=81920,           # ↓ reduce KV cache need
+            gpu_memory_utilization=0.95    # optional: use more of the device
         )
     else:
         llm = DeepThinkLLM(
             model=args.model,
             tensor_parallel_size=args.tensor_parallel_size,
             enable_prefix_caching=True,
-            trust_remote_code=True
+            trust_remote_code=True,
+            max_model_len=81920,
+            gpu_memory_utilization=0.95
         )
+
 
     # Create sampling parameters
     sampling_params = SamplingParams(
