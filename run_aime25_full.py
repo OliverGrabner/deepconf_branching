@@ -53,6 +53,9 @@ from vllm import SamplingParams
 from deepconf import DeepThinkLLM
 from deepconf.branching_wrapper import BranchingDeepThinkLLM
 
+# Import robust answer extraction
+from utils_robust import extract_answer_robust, check_answer_equality
+
 
 ########################################
 # 1. Dataset Loading
@@ -167,25 +170,9 @@ def extract_boxed_answer(text: str) -> str:
     return ""
 
 
-def simple_answer_match(predicted: str, ground_truth: str) -> bool:
-    """Simple answer matching"""
-    if predicted is None or ground_truth is None:
-        return False
-
-    pred_clean = str(predicted).strip().lower()
-    gt_clean = str(ground_truth).strip().lower()
-
-    if pred_clean == gt_clean:
-        return True
-
-    try:
-        pred_num = float(pred_clean)
-        gt_num = float(gt_clean)
-        return abs(pred_num - gt_num) < 1e-6
-    except:
-        pass
-
-    return False
+def simple_answer_match(predicted: str, ground_truth: str, dataset_type: str = "aime") -> bool:
+    """Answer matching using robust comparison"""
+    return check_answer_equality(predicted, ground_truth, dataset_type)
 
 
 ########################################
@@ -206,7 +193,7 @@ def calculate_confidence_correlation(traces: List[Dict], ground_truth: str) -> D
         if answer is None:
             continue
 
-        is_correct = 1 if simple_answer_match(answer, ground_truth) else 0
+        is_correct = 1 if simple_answer_match(answer, ground_truth, 'aime') else 0
         correctness.append(is_correct)
 
         if 'confs' in trace and trace['confs']:
@@ -288,15 +275,15 @@ def run_standard_eval(problem: Dict, model: str, budget: int, tensor_parallel_si
         compute_multiple_voting=True
     )
 
-    # Extract answers
+    # Extract answers using robust method
     for trace in result.all_traces:
         if 'text' in trace:
-            trace['extracted_answer'] = extract_boxed_answer(trace['text'])
+            trace['extracted_answer'] = extract_answer_robust(trace['text'], dataset_type='aime')
 
     # Evaluate
     correct_count = sum(
         1 for t in result.all_traces
-        if simple_answer_match(t.get('extracted_answer'), problem['expected_answer'])
+        if simple_answer_match(t.get('extracted_answer'), problem['expected_answer'], 'aime')
     )
 
     accuracy = (correct_count / len(result.all_traces) * 100) if result.all_traces else 0
@@ -375,10 +362,10 @@ def run_branching_eval(problem: Dict, model: str, initial: int, max_total: int, 
         sampling_params=sampling_params
     )
 
-    # Extract answers
+    # Extract answers using robust method
     for trace in result.all_traces:
         if 'text' in trace:
-            trace['extracted_answer'] = extract_boxed_answer(trace['text'])
+            trace['extracted_answer'] = extract_answer_robust(trace['text'], dataset_type='aime')
 
     # Evaluate by depth
     depth_stats = {}
@@ -388,7 +375,7 @@ def run_branching_eval(problem: Dict, model: str, initial: int, max_total: int, 
             depth_stats[depth] = {'total': 0, 'correct': 0}
 
         depth_stats[depth]['total'] += 1
-        if simple_answer_match(trace.get('extracted_answer'), problem['expected_answer']):
+        if simple_answer_match(trace.get('extracted_answer'), problem['expected_answer'], 'aime'):
             depth_stats[depth]['correct'] += 1
 
     # Overall
