@@ -154,7 +154,7 @@ def main():
 
     # Model configuration
     parser.add_argument('--model', type=str,
-                       default='deepseek-ai/DeepSeek-R1-Distill-Qwen-32B',
+                       default='deepseek-ai/DeepSeek-R1-0528-Qwen3-8B',
                        help='Model name or path')
     parser.add_argument('--tensor_parallel_size', type=int, default=4,
                        help='Number of GPUs for tensor parallelism')
