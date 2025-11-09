@@ -156,8 +156,8 @@ def main():
     parser.add_argument('--model', type=str,
                        default='deepseek-ai/DeepSeek-R1-Distill-Qwen-7B',
                        help='Model name or path')
-    parser.add_argument('--tensor_parallel_size', type=int, default=4,
-                       help='Number of GPUs for tensor parallelism')
+    parser.add_argument('--tensor_parallel_size', type=int, default=2,
+                       help='Number of GPUs for tensor parallelism (1, 2, or 4)')
     parser.add_argument('--gpu_memory_utilization', type=float, default=0.85,
                        help='GPU memory utilization (0.0-1.0, lower = less memory)')
     parser.add_argument('--max_num_seqs', type=int, default=128,
