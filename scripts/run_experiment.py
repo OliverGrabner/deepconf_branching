@@ -320,6 +320,7 @@ def process_question_peak_branching(
         'voted_answer': voted_answer,
         'is_correct': is_correct,
         'num_traces_generated': len(result.all_traces),
+        'num_valid_traces': len(valid_traces),  # Add this for compatibility
         'num_initial_traces': len(initial_traces_list),
         'num_branch_traces': len(branch_traces_list),
         'initial_trace_accuracy': initial_accuracy,
@@ -328,8 +329,10 @@ def process_question_peak_branching(
         'vote_distribution': vote_distribution,
         'valid_traces': valid_traces,
         'peak_branching_stats': peak_stats,
+        'peak_branching_config': result.peak_branching_config if hasattr(result, 'peak_branching_config') else {},
         'statistics': {
-            'total_tokens_generated': result.total_tokens,
+            'total_tokens': result.total_tokens,  # Changed from total_tokens_generated
+            'total_tokens_generated': result.total_tokens,  # Keep both for compatibility
             'avg_tokens_per_trace': result.avg_tokens_per_trace,
             'generation_time': result.generation_time,
             'processing_time': result.processing_time,
