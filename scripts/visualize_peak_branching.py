@@ -18,76 +18,176 @@ from datetime import datetime
 
 def create_confidence_peaks_plot(
     traces: List[Dict[str, Any]],
+    ground_truth: str = None,
+    peak_branching_config: Dict[str, Any] = None,
     save_path: Optional[str] = None
 ):
     """
-    Create a plot showing confidence curves with detected peaks
+    Create comprehensive confidence evolution plot for peak branching
 
     Shows:
-    - Confidence evolution for each trace
-    - Detected peaks marked with vertical lines
-    - Branch points indicated
+    - Y-axis: Confidence score
+    - X-axis: Token position (cumulative tokens used)
+    - Green lines: Correct answer traces
+    - Red lines: Incorrect answer traces
+    - Different line styles for different stages (initial, stage 1, stage 2, etc.)
+    - Peak markers showing where branches originated
+    - Branch connection indicators
     """
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
+    # Organize traces by stage
+    traces_by_stage = {}
+    for trace in traces:
+        stage = trace.get('stage', 0)
+        if stage not in traces_by_stage:
+            traces_by_stage[stage] = []
+        traces_by_stage[stage].append(trace)
 
-    # Separate initial and branch traces
-    initial_traces = [t for t in traces if t.get('depth', 0) == 0]
-    branch_traces = [t for t in traces if t.get('depth', 0) == 1]
+    num_stages = len(traces_by_stage)
 
-    # Plot 1: Initial traces with peaks
-    ax1.set_title('Initial Traces - Confidence Evolution with Detected Peaks', fontsize=12, fontweight='bold')
+    # Create subplots: one for each stage + one overview
+    fig, axes = plt.subplots(num_stages + 1, 1, figsize=(16, 4 * (num_stages + 1)))
 
-    for trace in initial_traces:
-        confs = trace.get('confs', [])
-        if confs:
+    if num_stages == 0:
+        axes = [axes]  # Handle single subplot case
+
+    # Line styles for different stages
+    line_styles = ['-', '--', '-.', ':']
+
+    # Overview plot (all stages together)
+    ax_overview = axes[0] if num_stages > 0 else axes
+    ax_overview.set_title('Peak Branching - All Stages Overview', fontsize=14, fontweight='bold')
+
+    # Track legend entries to avoid duplicates
+    legend_added = {'correct': False, 'incorrect': False}
+
+    # Plot all traces on overview
+    for stage in sorted(traces_by_stage.keys()):
+        stage_traces = traces_by_stage[stage]
+        line_style = line_styles[stage % len(line_styles)]
+
+        for trace in stage_traces:
+            confs = trace.get('confs', [])
+            if not confs:
+                continue
+
+            # Determine correctness
+            answer = trace.get('extracted_answer') or trace.get('answer')
+            is_correct = (answer == ground_truth) if ground_truth else False
+
+            # Color based on correctness
+            color = 'green' if is_correct else 'red'
+            alpha = 0.7 if stage == 0 else 0.4  # Initial traces more opaque
+
+            # X-axis: token positions
             x = range(len(confs))
-            label = f"Trace {trace['trace_idx']}"
-            if trace.get('extracted_answer'):
-                label += f" → {trace['extracted_answer']}"
 
-            ax1.plot(x, confs, alpha=0.7, linewidth=1, label=label)
+            # Label for legend (only once per category)
+            label = None
+            if is_correct and not legend_added['correct']:
+                label = f'Correct (ans={answer})'
+                legend_added['correct'] = True
+            elif not is_correct and not legend_added['incorrect']:
+                label = f'Incorrect'
+                legend_added['incorrect'] = True
 
-            # Mark peaks
-            peaks = trace.get('confidence_peaks', [])
-            for peak in peaks:
-                pos = peak['position']
-                conf = peak['confidence']
-                ax1.axvline(x=pos, color='red', alpha=0.3, linestyle='--', linewidth=0.5)
-                ax1.scatter([pos], [confs[pos] if pos < len(confs) else conf],
-                           color='red', s=50, zorder=5)
+            ax_overview.plot(x, confs, color=color, alpha=alpha,
+                           linewidth=1.5 if stage == 0 else 1.0,
+                           linestyle=line_style, label=label)
 
-    ax1.set_xlabel('Token Position')
-    ax1.set_ylabel('Confidence Score')
-    ax1.grid(True, alpha=0.3)
-    ax1.legend(loc='upper right', fontsize=8, ncol=2)
+            # Mark peaks for initial traces
+            if stage == 0:
+                peaks = trace.get('confidence_peaks', [])
+                for peak in peaks:
+                    pos = peak['position']
+                    if pos < len(confs):
+                        ax_overview.scatter([pos], [confs[pos]],
+                                          color='orange', s=100, marker='*',
+                                          edgecolors='black', linewidths=1, zorder=5)
 
     # Add confidence threshold line
-    ax1.axhline(y=1.5, color='green', linestyle='-', alpha=0.5, label='Threshold')
+    if peak_branching_config:
+        threshold = peak_branching_config.get('confidence_threshold', 1.5)
+        ax_overview.axhline(y=threshold, color='purple', linestyle='--',
+                          alpha=0.6, linewidth=2, label=f'Threshold ({threshold})')
 
-    # Plot 2: Branch traces showing where they branched from
-    ax2.set_title('Branch Traces - Showing Branch Points', fontsize=12, fontweight='bold')
+    ax_overview.set_xlabel('Token Position', fontsize=11)
+    ax_overview.set_ylabel('Confidence Score', fontsize=11)
+    ax_overview.grid(True, alpha=0.3)
+    ax_overview.legend(loc='upper right', fontsize=9)
 
-    for trace in branch_traces:
-        confs = trace.get('confs', [])
-        if confs:
-            x = range(len(confs))
+    # Individual stage plots
+    for stage_idx, stage in enumerate(sorted(traces_by_stage.keys())):
+        if num_stages == 0:
+            break
+
+        ax = axes[stage_idx + 1]
+        stage_traces = traces_by_stage[stage]
+
+        # Title based on stage
+        if stage == 0:
+            ax.set_title(f'Stage {stage}: Initial Traces (n={len(stage_traces)})',
+                        fontsize=12, fontweight='bold')
+        else:
+            ax.set_title(f'Stage {stage}: Branches (n={len(stage_traces)})',
+                        fontsize=12, fontweight='bold')
+
+        for trace in stage_traces:
+            confs = trace.get('confs', [])
+            if not confs:
+                continue
+
+            # Determine correctness
+            answer = trace.get('extracted_answer') or trace.get('answer')
+            is_correct = (answer == ground_truth) if ground_truth else False
+
+            # Color and styling
+            color = 'green' if is_correct else 'red'
+            alpha = 0.7
+
+            trace_idx = trace.get('trace_idx', '?')
             parent_idx = trace.get('parent_idx')
             branch_point = trace.get('branch_point_tokens', 0)
 
-            label = f"Branch {trace['trace_idx']} (from {parent_idx}@{branch_point})"
-            if trace.get('extracted_answer'):
-                label += f" → {trace['extracted_answer']}"
+            # Build label
+            if stage == 0:
+                label = f"T{trace_idx} → {answer}"
+            else:
+                label = f"T{trace_idx} (from T{parent_idx}@{branch_point}) → {answer}"
 
-            ax2.plot(x, confs, alpha=0.7, linewidth=1, label=label)
+            # X-axis: token positions
+            x = range(len(confs))
 
-            # Mark branch point
-            if branch_point > 0:
-                ax2.axvline(x=branch_point, color='blue', alpha=0.3, linestyle=':', linewidth=1)
+            ax.plot(x, confs, color=color, alpha=alpha, linewidth=1.5, label=label)
 
-    ax2.set_xlabel('Token Position')
-    ax2.set_ylabel('Confidence Score')
-    ax2.grid(True, alpha=0.3)
-    ax2.legend(loc='upper right', fontsize=8, ncol=2)
+            # Mark peaks for initial traces
+            if stage == 0:
+                peaks = trace.get('confidence_peaks', [])
+                for peak in peaks:
+                    pos = peak['position']
+                    conf = peak['confidence']
+                    if pos < len(confs):
+                        ax.scatter([pos], [confs[pos]],
+                                 color='orange', s=150, marker='*',
+                                 edgecolors='black', linewidths=1.5, zorder=5)
+                        # Add peak confidence value
+                        ax.text(pos, confs[pos] + 0.1, f'{conf:.2f}',
+                               fontsize=7, ha='center', color='orange')
+
+            # Mark branch point for branch traces
+            if stage > 0 and branch_point > 0:
+                ax.axvline(x=branch_point, color='blue', alpha=0.5,
+                          linestyle=':', linewidth=2, label=f'Branch point')
+
+        # Add confidence threshold line
+        if peak_branching_config:
+            threshold = peak_branching_config.get('confidence_threshold', 1.5)
+            ax.axhline(y=threshold, color='purple', linestyle='--',
+                      alpha=0.6, linewidth=1.5)
+
+        ax.set_xlabel('Token Position', fontsize=10)
+        ax.set_ylabel('Confidence Score', fontsize=10)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='upper right', fontsize=7, ncol=2)
 
     plt.tight_layout()
 
@@ -397,7 +497,12 @@ def visualize_peak_branching_results(
 
             # 1. Confidence peaks plot
             save_path = os.path.join(output_dir, f"peaks_{dataset_name}_q{i}_{timestamp}.png")
-            create_confidence_peaks_plot(result.get('valid_traces', []), save_path)
+            create_confidence_peaks_plot(
+                result.get('valid_traces', []),
+                ground_truth=result.get('ground_truth'),
+                peak_branching_config=result.get('peak_branching_config'),
+                save_path=save_path
+            )
             print(f"    Created: {save_path}")
 
             # 2. Summary plot

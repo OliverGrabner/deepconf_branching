@@ -88,7 +88,7 @@ class DeepThinkLLM:
         average_tokens: int = 8000,
         # Peak branching mode parameters
         initial_traces: int = 8,
-        max_traces: int = 64,
+        peak_max_traces: int = 32,
         confidence_threshold: float = 1.5,
         peak_window_size: int = 512,
         min_peak_distance: int = 256,
@@ -119,7 +119,7 @@ class DeepThinkLLM:
             branch_goal: Target completion % for branching (branching mode)
             average_tokens: Historical average tokens (branching mode)
             initial_traces: Initial traces for peak branching mode
-            max_traces: Maximum total traces (stops when next doubling would exceed)
+            peak_max_traces: Maximum total traces (stops when next doubling would exceed)
             confidence_threshold: Minimum confidence for peaks (peak branching mode)
             peak_window_size: Window size for peak detection (peak branching mode)
             min_peak_distance: Minimum distance between peaks (peak branching mode)
@@ -177,7 +177,7 @@ class DeepThinkLLM:
         elif mode == "peak_branching":
             output.config.update({
                 "initial_traces": initial_traces,
-                "max_traces": max_traces,
+                "max_traces": peak_max_traces,
                 "confidence_threshold": confidence_threshold,
                 "peak_window_size": peak_window_size,
                 "min_peak_distance": min_peak_distance,
@@ -186,7 +186,7 @@ class DeepThinkLLM:
             })
             result = self._deepthink_peak_branching(
                 prompt, output,
-                initial_traces, max_traces, confidence_threshold,
+                initial_traces, peak_max_traces, confidence_threshold,
                 peak_window_size, min_peak_distance, peak_selection_ratio,
                 exclusion_zone_size, window_size, sampling_params
             )
@@ -603,7 +603,7 @@ class DeepThinkLLM:
         prompt: str,
         output: DeepThinkOutput,
         initial_traces: int,
-        max_traces: int,
+        peak_max_traces: int,
         confidence_threshold: float,
         peak_window_size: int,
         min_peak_distance: int,
@@ -619,7 +619,7 @@ class DeepThinkLLM:
         # Initialize peak branching manager with multi-stage support
         manager = PeakBranchingManager(
             initial_traces=initial_traces,
-            max_traces=max_traces,
+            max_traces=peak_max_traces,
             confidence_threshold=confidence_threshold,
             window_size=peak_window_size,
             min_peak_distance=min_peak_distance,
@@ -630,7 +630,7 @@ class DeepThinkLLM:
         # Store config in output
         output.peak_branching_config = {
             'initial_traces': initial_traces,
-            'max_traces': max_traces,
+            'max_traces': peak_max_traces,
             'confidence_threshold': confidence_threshold,
             'peak_window_size': peak_window_size,
             'min_peak_distance': min_peak_distance,

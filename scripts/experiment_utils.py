@@ -463,7 +463,7 @@ def generate_question_visualizations(
         question_idx: Question index
         viz_dir: Visualization output directory
         timestamp: Timestamp for filenames
-        experiment_type: "traditional" or "branching"
+        experiment_type: "traditional", "branching", or "peak_branching"
 
     Returns:
         True if successful, False otherwise
@@ -500,6 +500,32 @@ def generate_question_visualizations(
                 result.get('ground_truth', ''),
                 confidence_path
             )
+
+        elif experiment_type == "peak_branching":
+            from visualize_peak_branching import (
+                create_confidence_peaks_plot,
+                create_peak_branching_summary,
+                create_genealogy_graph as create_peak_genealogy
+            )
+
+            # Create organized subdirectories for peak branching visualizations
+            question_dir = os.path.join(viz_dir, f"{dataset_name}_q{question_idx}")
+            os.makedirs(question_dir, exist_ok=True)
+
+            # Prepare paths in subdirectory
+            confidence_path = os.path.join(question_dir, f"confidence_peaks.png")
+            summary_path = os.path.join(question_dir, f"summary.png")
+            genealogy_path = os.path.join(question_dir, f"genealogy.png")
+
+            # Generate 3 visualizations
+            create_confidence_peaks_plot(
+                result.get('valid_traces', []),
+                ground_truth=result.get('ground_truth'),
+                peak_branching_config=result.get('peak_branching_config'),
+                save_path=confidence_path
+            )
+            create_peak_branching_summary(result, summary_path)
+            create_peak_genealogy(result.get('valid_traces', []), genealogy_path)
 
         elif experiment_type == "traditional":
             # Import matplotlib for traditional SC plots
