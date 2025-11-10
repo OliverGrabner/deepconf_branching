@@ -647,9 +647,14 @@ class DeepThinkLLM:
         initial_params = copy.deepcopy(sampling_params)
         initial_params.n = initial_traces
         initial_params.logprobs = 20  # Need logprobs for confidence
+        initial_params.max_tokens = 64000  # Set same limit as branches for consistency
         initial_params.stop = ["}\n\n", "}\n"]  # Stop after completing \boxed{answer}
 
         print(f"Generating initial traces...")
+        print(f"  Max tokens: {initial_params.max_tokens}")
+        print(f"  Stop sequences: {initial_params.stop}")
+        print(f"  Prompt length: {len(prompt)} chars")
+
         vllm_outputs = self.llm.generate([prompt], initial_params)
         initial_gen_time = time.time() - generation_start
 
@@ -660,11 +665,17 @@ class DeepThinkLLM:
             token_ids = vllm_output.token_ids
             logprobs = vllm_output.logprobs
 
+            print(f"\nInitial trace {i}:")
+            print(f"  Generated {len(token_ids)} tokens")
+            print(f"  Finish reason: {vllm_output.finish_reason}")
+
             # Calculate confidence scores
             confs = compute_confidence(logprobs) if logprobs else []
 
             # Extract answer
             extracted_answer = extract_answer(text)
+            if extracted_answer:
+                print(f"  Found answer: {extracted_answer}")
 
             # Create initial trace
             trace = manager.create_initial_trace(
@@ -710,12 +721,23 @@ class DeepThinkLLM:
                     self.tokenizer
                 )
 
+                # Log branch details
+                print(f"  Prefix tokens: {len(branch_info['prompt_tokens'])} tokens")
+                print(f"  Prefix prompt length: {len(prefix_prompt)} chars")
+                print(f"  Remaining token budget: {64000 - len(branch_info['prompt_tokens'])} tokens")
+
+                # Show last 200 chars of prefix to see where we're branching from
+                print(f"  Branching from: ...{prefix_prompt[-200:]}" if len(prefix_prompt) > 200 else f"  Branching from: {prefix_prompt}")
+
                 # Generate continuation from branch point
                 branch_params = copy.deepcopy(sampling_params)
                 branch_params.n = 1
                 branch_params.logprobs = 20
-                branch_params.max_tokens = 64000  # Reduced from 130k to 64k
+                branch_params.max_tokens = max(1000, 64000 - len(branch_info['prompt_tokens']))  # Adjust for prefix length
                 branch_params.stop = ["}\n\n", "}\n"]  # Stop after completing \boxed{answer}
+
+                print(f"  Branch max_tokens: {branch_params.max_tokens}")
+                print(f"  Generating branch continuation...")
 
                 branch_output = self.llm.generate([prefix_prompt], branch_params)
                 branch_vllm = branch_output[0].outputs[0]
@@ -730,6 +752,12 @@ class DeepThinkLLM:
 
                 # Extract answer from branch
                 branch_answer = extract_answer(branch_text)
+
+                # Log branch results
+                print(f"  Branch generated {len(branch_token_ids)} tokens")
+                print(f"  Finish reason: {branch_vllm.finish_reason}")
+                if branch_answer:
+                    print(f"  Found answer: {branch_answer}")
 
                 # Create branch trace with stage information
                 branch_trace = manager.create_branch_trace(
