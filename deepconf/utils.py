@@ -483,12 +483,128 @@ def prepare_prompt_gpt(question: str, tokenizer, reasoning_effort: str = "high")
     messages = [
         {"role": "user", "content": question}
     ]
-    
+
     full_prompt = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
         reasoning_effort=reasoning_effort,
         add_generation_prompt=True
     )
-    
+
     return full_prompt
+
+
+# ============= PEAK DETECTION UTILITIES =============
+
+def sliding_window_confidence(confs: List[float], window_size: int) -> List[float]:
+    """
+    Compute sliding window average confidence
+
+    Args:
+        confs: List of confidence scores
+        window_size: Size of sliding window
+
+    Returns:
+        List of windowed averages (length = len(confs) - window_size + 1)
+    """
+    if not confs or len(confs) < window_size:
+        return []
+
+    window_avgs = []
+    for i in range(len(confs) - window_size + 1):
+        window = confs[i:i + window_size]
+        window_avgs.append(np.mean(window))
+
+    return window_avgs
+
+
+def find_local_maxima(values: List[float], min_distance: int = 1) -> List[int]:
+    """
+    Find indices of local maxima in a list of values
+
+    Args:
+        values: List of values
+        min_distance: Minimum distance between peaks
+
+    Returns:
+        List of indices where local maxima occur
+    """
+    if len(values) < 3:
+        return []
+
+    maxima = []
+    for i in range(1, len(values) - 1):
+        # Check if it's a local maximum
+        if values[i] > values[i-1] and values[i] > values[i+1]:
+            # Check minimum distance from previous maxima
+            if not maxima or (i - maxima[-1]) >= min_distance:
+                maxima.append(i)
+
+    return maxima
+
+
+def detect_confidence_peaks(
+    confs: List[float],
+    window_size: int = 512,
+    threshold: float = 1.5,
+    min_peak_distance: int = 256,
+    peak_selection_ratio: float = 0.8
+) -> List[Dict[str, Any]]:
+    """
+    Detect confidence peaks in a trace
+
+    Args:
+        confs: List of token confidence scores
+        window_size: Size of sliding window
+        threshold: Minimum confidence for a peak
+        min_peak_distance: Minimum tokens between peaks
+        peak_selection_ratio: Valid range for peaks (e.g., 0.8 = middle 80% of trace)
+
+    Returns:
+        List of peak dictionaries with position and confidence
+    """
+    if not confs or len(confs) < window_size:
+        return []
+
+    # Compute sliding window averages
+    window_avgs = sliding_window_confidence(confs, window_size)
+
+    # Find local maxima
+    maxima_indices = find_local_maxima(window_avgs, min_distance=min_peak_distance)
+
+    # Filter by threshold and position
+    peaks = []
+    min_fraction = (1 - peak_selection_ratio) / 2
+    max_fraction = 1 - min_fraction
+
+    for idx in maxima_indices:
+        if window_avgs[idx] > threshold:
+            # Calculate position in original trace
+            position = idx + window_size // 2
+            trace_fraction = position / len(confs)
+
+            # Check if in valid range
+            if min_fraction <= trace_fraction <= max_fraction:
+                peaks.append({
+                    'position': position,
+                    'confidence': window_avgs[idx],
+                    'trace_fraction': trace_fraction
+                })
+
+    return peaks
+
+
+def prepare_prompt_from_tokens(token_ids: List[int], tokenizer) -> str:
+    """
+    Reconstruct prompt from token IDs for branching
+
+    Args:
+        token_ids: List of token IDs to use as prefix
+        tokenizer: Tokenizer to decode tokens
+
+    Returns:
+        Reconstructed text prompt
+    """
+    # Decode tokens back to text
+    text = tokenizer.decode(token_ids, skip_special_tokens=False)
+    return text

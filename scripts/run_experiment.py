@@ -175,6 +175,170 @@ def process_question_traditional(
     return question_result
 
 
+def process_question_peak_branching(
+    deep_llm: DeepThinkLLM,
+    question: str,
+    ground_truth: str,
+    initial_traces: int,
+    total_traces: int,
+    confidence_threshold: float,
+    peak_window_size: int,
+    min_peak_distance: int,
+    peak_selection_ratio: float,
+    sampling_params: SamplingParams,
+    model_type: str,
+    dataset_name: str
+) -> Dict[str, Any]:
+    """
+    Process a single question using peak branching self-consistency
+
+    Args:
+        deep_llm: Initialized model
+        question: Question text
+        ground_truth: Ground truth answer
+        initial_traces: Number of initial traces
+        total_traces: Total traces after branching
+        confidence_threshold: Minimum confidence for peaks
+        peak_window_size: Window size for peak detection
+        min_peak_distance: Minimum distance between peaks
+        peak_selection_ratio: Valid range for peaks
+        sampling_params: Sampling parameters
+        model_type: Model type for prompt formatting
+        dataset_name: Dataset name (for answer extraction)
+
+    Returns:
+        Question result dictionary
+    """
+    # Prepare prompt
+    prompt = prepare_prompt(question, deep_llm.tokenizer, model_type)
+
+    # Generate traces using peak branching mode
+    result = deep_llm.deepthink(
+        prompt=prompt,
+        mode="peak_branching",
+        initial_traces=initial_traces,
+        total_traces=total_traces,
+        confidence_threshold=confidence_threshold,
+        peak_window_size=peak_window_size,
+        min_peak_distance=min_peak_distance,
+        peak_selection_ratio=peak_selection_ratio,
+        sampling_params=sampling_params,
+        compute_multiple_voting=False
+    )
+
+    # Extract answers and check correctness
+    all_answers = []
+    valid_traces = []
+    initial_traces_list = []
+    branch_traces_list = []
+
+    is_gsm8k = "gsm8k" in dataset_name.lower()
+    equal_func_to_use = equal_func_gsm8k if is_gsm8k else equal_func
+
+    for trace in result.all_traces:
+        # Use appropriate extraction method
+        if is_gsm8k:
+            extracted_answer = extract_answer_gsm8k(trace.get('text', ''))
+        else:
+            extracted_answer = trace.get('extracted_answer')
+
+        if extracted_answer is not None:
+            all_answers.append(extracted_answer)
+
+            # Check correctness
+            is_correct = False
+            try:
+                is_correct = equal_func_to_use(extracted_answer, ground_truth)
+            except:
+                is_correct = str(extracted_answer) == str(ground_truth)
+
+            trace_info = {
+                'trace_idx': trace.get('trace_idx'),
+                'depth': trace.get('depth', 0),
+                'parent_idx': trace.get('parent_idx'),
+                'branch_point_tokens': trace.get('branch_point_tokens'),
+                'answer': extracted_answer,
+                'is_correct': is_correct,
+                'tokens_generated': trace.get('tokens_generated', 0),
+                'confidence_peaks': trace.get('confidence_peaks', [])
+            }
+            valid_traces.append(trace_info)
+
+            # Separate by depth
+            if trace.get('depth', 0) == 0:
+                initial_traces_list.append(trace_info)
+            else:
+                branch_traces_list.append(trace_info)
+
+    # Perform weighted voting
+    if all_answers:
+        # Apply weights based on depth
+        weighted_answers = []
+        weights = []
+        for trace_info in valid_traces:
+            weighted_answers.append(trace_info['answer'])
+            # Weight: 1.0 for initial, 1.1 for branches
+            weight = 1.0 if trace_info['depth'] == 0 else 1.1
+            weights.append(weight)
+
+        # Calculate weighted vote
+        from collections import Counter
+        weighted_counts = Counter()
+        for ans, w in zip(weighted_answers, weights):
+            weighted_counts[ans] += w
+
+        voted_answer = weighted_counts.most_common(1)[0][0] if weighted_counts else None
+        vote_distribution = dict(weighted_counts)
+    else:
+        voted_answer = None
+        vote_distribution = {}
+
+    # Evaluate correctness
+    is_correct = False
+    if voted_answer and ground_truth:
+        try:
+            is_correct = equal_func_to_use(voted_answer, ground_truth)
+        except:
+            is_correct = str(voted_answer) == str(ground_truth)
+
+    # Calculate accuracies
+    initial_accuracy = sum(1 for t in initial_traces_list if t['is_correct']) / len(initial_traces_list) if initial_traces_list else 0.0
+    branch_accuracy = sum(1 for t in branch_traces_list if t['is_correct']) / len(branch_traces_list) if branch_traces_list else 0.0
+    overall_accuracy = sum(1 for t in valid_traces if t['is_correct']) / len(valid_traces) if valid_traces else 0.0
+
+    # Get peak branching statistics
+    peak_stats = result.peak_branching_stats if hasattr(result, 'peak_branching_stats') else {}
+
+    # Compile results
+    question_result = {
+        'question': question,
+        'ground_truth': ground_truth,
+        'voted_answer': voted_answer,
+        'is_correct': is_correct,
+        'num_traces_generated': len(result.all_traces),
+        'num_initial_traces': len(initial_traces_list),
+        'num_branch_traces': len(branch_traces_list),
+        'initial_trace_accuracy': initial_accuracy,
+        'branch_trace_accuracy': branch_accuracy,
+        'overall_trace_accuracy': overall_accuracy,
+        'vote_distribution': vote_distribution,
+        'valid_traces': valid_traces,
+        'peak_branching_stats': peak_stats,
+        'statistics': {
+            'total_tokens_generated': result.total_tokens,
+            'avg_tokens_per_trace': result.avg_tokens_per_trace,
+            'generation_time': result.generation_time,
+            'processing_time': result.processing_time,
+            'total_time': result.total_time,
+            'throughput_tokens_per_sec': result.total_tokens / result.generation_time if result.generation_time > 0 else 0,
+            'prefix_cache_savings': peak_stats.get('prefix_cache_savings', 0),
+            'prefix_cache_savings_pct': peak_stats.get('prefix_cache_savings_pct', 0)
+        }
+    }
+
+    return question_result
+
+
 def process_question_branching(
     deep_llm: DeepThinkLLM,
     question: str,
@@ -356,7 +520,7 @@ def main():
 
     # Experiment configuration
     parser.add_argument('--experiment', type=str, required=True,
-                       choices=['traditional', 'branching'],
+                       choices=['traditional', 'branching', 'peak_branching'],
                        help='Experiment type')
     parser.add_argument('--dataset', type=str, required=True,
                        help='Dataset name: AIME2025-I, AIME2025-II, gsm8k, or both (for AIME)')
@@ -395,6 +559,20 @@ def main():
                        help='[Branching] Target completion percentage for branching')
     parser.add_argument('--historical_stats', type=str, default=None,
                        help='[Branching] Path to historical token statistics JSON file')
+
+    # Peak Branching parameters
+    parser.add_argument('--initial_traces', type=int, default=8,
+                       help='[Peak Branching] Number of initial traces')
+    parser.add_argument('--total_traces', type=int, default=32,
+                       help='[Peak Branching] Total traces after branching')
+    parser.add_argument('--confidence_threshold', type=float, default=1.5,
+                       help='[Peak Branching] Minimum confidence for peaks')
+    parser.add_argument('--peak_window_size', type=int, default=512,
+                       help='[Peak Branching] Window size for peak detection')
+    parser.add_argument('--min_peak_distance', type=int, default=256,
+                       help='[Peak Branching] Minimum distance between peaks')
+    parser.add_argument('--peak_selection_ratio', type=float, default=0.8,
+                       help='[Peak Branching] Valid range for peaks (0.8 = middle 80%)')
 
     # Sampling parameters
     parser.add_argument('--temperature', type=float, default=0.8,
@@ -456,10 +634,15 @@ def main():
 
     if args.experiment == "traditional":
         print(f"Num traces: {args.num_traces}")
-    else:
+    elif args.experiment == "branching":
         print(f"Start traces: {args.start_traces}, Max traces: {args.max_traces}")
         print(f"Selected percent: {args.selected_percent*100:.0f}%")
         print(f"Iterations: {args.n_iterations}, Branch goal: {args.branch_goal*100:.0f}%")
+    else:  # peak_branching
+        print(f"Initial traces: {args.initial_traces}, Total traces: {args.total_traces}")
+        print(f"Confidence threshold: {args.confidence_threshold}")
+        print(f"Peak window: {args.peak_window_size}, Min distance: {args.min_peak_distance}")
+        print(f"Peak selection ratio: {args.peak_selection_ratio*100:.0f}%")
 
     print(f"Temperature: {args.temperature}")
     print(f"GPUs: {args.tensor_parallel_size}")
@@ -535,7 +718,7 @@ def main():
                         dataset_name=dataset_name
                     )
 
-                else:  # branching
+                elif args.experiment == "branching":
                     # Get average tokens
                     if historical_stats and args.question_id is None:
                         avg_tokens = get_average_tokens(historical_stats, dataset_name, i)
@@ -555,6 +738,22 @@ def main():
                         n_iterations=args.n_iterations,
                         branch_goal=args.branch_goal,
                         average_tokens=avg_tokens,
+                        sampling_params=sampling_params,
+                        model_type=args.model_type,
+                        dataset_name=dataset_name
+                    )
+
+                else:  # peak_branching
+                    result = process_question_peak_branching(
+                        deep_llm=deep_llm,
+                        question=question,
+                        ground_truth=ground_truth,
+                        initial_traces=args.initial_traces,
+                        total_traces=args.total_traces,
+                        confidence_threshold=args.confidence_threshold,
+                        peak_window_size=args.peak_window_size,
+                        min_peak_distance=args.min_peak_distance,
+                        peak_selection_ratio=args.peak_selection_ratio,
                         sampling_params=sampling_params,
                         model_type=args.model_type,
                         dataset_name=dataset_name

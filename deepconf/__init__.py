@@ -5,3 +5,4 @@ from .utils import (
     equal_func
 )
 from .branching import BranchingManager, TraceState, BranchEvent
+from .peak_branching import PeakBranchingManager, PeakTrace, ConfidencePeak

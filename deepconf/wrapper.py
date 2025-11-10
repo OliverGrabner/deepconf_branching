@@ -16,9 +16,11 @@ import copy
 from .outputs import DeepThinkOutput
 from .utils import (
     process_batch_results, process_batch_results_offline,
-    weighted_majority_vote, compute_all_voting_results, compute_confidence
+    weighted_majority_vote, compute_all_voting_results, compute_confidence,
+    extract_answer, prepare_prompt_from_tokens
 )
 from .branching import BranchingManager, TraceState
+from .peak_branching import PeakBranchingManager, PeakTrace
 
 
 
@@ -84,6 +86,13 @@ class DeepThinkLLM:
         n_iterations: int = 10,
         branch_goal: float = 0.75,
         average_tokens: int = 8000,
+        # Peak branching mode parameters
+        initial_traces: int = 8,
+        total_traces: int = 32,
+        confidence_threshold: float = 1.5,
+        peak_window_size: int = 512,
+        min_peak_distance: int = 256,
+        peak_selection_ratio: float = 0.8,
         # Common parameters
         window_size: int = 2048,
         sampling_params: Optional[SamplingParams] = None,
@@ -96,7 +105,8 @@ class DeepThinkLLM:
 
         Args:
             prompt: Input prompt (prepared string)
-            mode: "online" for confidence-based early stopping, "offline" for batch generation, "branching" for dynamic branching
+            mode: "online" for confidence-based early stopping, "offline" for batch generation,
+                  "branching" for dynamic branching, "peak_branching" for confidence peak branching
             warmup_traces: Number of warmup traces for online mode
             total_budget: Total budget for online mode
             confidence_percentile: Percentile for confidence threshold in online mode
@@ -107,6 +117,12 @@ class DeepThinkLLM:
             n_iterations: Number of branching check points (branching mode)
             branch_goal: Target completion % for branching (branching mode)
             average_tokens: Historical average tokens (branching mode)
+            initial_traces: Initial traces for peak branching mode
+            total_traces: Total traces target for peak branching mode
+            confidence_threshold: Minimum confidence for peaks (peak branching mode)
+            peak_window_size: Window size for peak detection (peak branching mode)
+            min_peak_distance: Minimum distance between peaks (peak branching mode)
+            peak_selection_ratio: Valid range for peaks (peak branching mode)
             window_size: Window size for confidence computation
             sampling_params: Custom vLLM sampling parameters
             compute_multiple_voting: Whether to compute multiple voting method results
@@ -154,6 +170,21 @@ class DeepThinkLLM:
                 prompt, output,
                 start_traces, max_traces, selected_percent,
                 n_iterations, branch_goal, average_tokens,
+                window_size, sampling_params
+            )
+        elif mode == "peak_branching":
+            output.config.update({
+                "initial_traces": initial_traces,
+                "total_traces": total_traces,
+                "confidence_threshold": confidence_threshold,
+                "peak_window_size": peak_window_size,
+                "min_peak_distance": min_peak_distance,
+                "peak_selection_ratio": peak_selection_ratio,
+            })
+            result = self._deepthink_peak_branching(
+                prompt, output,
+                initial_traces, total_traces, confidence_threshold,
+                peak_window_size, min_peak_distance, peak_selection_ratio,
                 window_size, sampling_params
             )
         else:
@@ -561,5 +592,205 @@ class DeepThinkLLM:
         print(f"  Total traces: {len(all_traces)}")
         print(f"  Total tokens: {total_tokens}")
         print(f"  Branch events: {len(manager.branch_events)}")
+
+        return output
+
+    def _deepthink_peak_branching(
+        self,
+        prompt: str,
+        output: DeepThinkOutput,
+        initial_traces: int,
+        total_traces: int,
+        confidence_threshold: float,
+        peak_window_size: int,
+        min_peak_distance: int,
+        peak_selection_ratio: float,
+        window_size: int,
+        sampling_params: Optional[SamplingParams]
+    ) -> DeepThinkOutput:
+        """Peak branching - branch from confidence peaks within traces"""
+
+        processing_start = time.time()
+
+        # Initialize peak branching manager
+        manager = PeakBranchingManager(
+            initial_traces=initial_traces,
+            total_traces=total_traces,
+            confidence_threshold=confidence_threshold,
+            window_size=peak_window_size,
+            min_peak_distance=min_peak_distance,
+            peak_selection_ratio=peak_selection_ratio
+        )
+
+        # Store config in output
+        output.peak_branching_config = {
+            'initial_traces': initial_traces,
+            'total_traces': total_traces,
+            'confidence_threshold': confidence_threshold,
+            'peak_window_size': peak_window_size,
+            'min_peak_distance': min_peak_distance,
+            'peak_selection_ratio': peak_selection_ratio
+        }
+
+        # Phase 1: Generate initial traces
+        print(f"\n=== Phase 1: Generating {initial_traces} initial traces ===")
+        generation_start = time.time()
+
+        # Generate all initial traces at once
+        initial_params = copy.deepcopy(sampling_params)
+        initial_params.n = initial_traces
+        initial_params.logprobs = 20  # Need logprobs for confidence
+
+        print(f"Generating initial traces...")
+        vllm_outputs = self.llm.generate([prompt], initial_params)
+        initial_gen_time = time.time() - generation_start
+
+        # Process initial traces
+        print("Processing initial traces...")
+        for i, vllm_output in enumerate(vllm_outputs[0].outputs):
+            text = vllm_output.text
+            token_ids = vllm_output.token_ids
+            logprobs = vllm_output.logprobs
+
+            # Calculate confidence scores
+            confs = compute_confidence(logprobs) if logprobs else []
+
+            # Extract answer
+            extracted_answer = extract_answer(text)
+
+            # Create initial trace
+            trace = manager.create_initial_trace(
+                text=text,
+                token_ids=token_ids,
+                confs=confs,
+                extracted_answer=extracted_answer
+            )
+
+            print(f"  Trace {i}: {len(token_ids)} tokens, answer: {extracted_answer}")
+
+        # Phase 2: Analyze traces for confidence peaks
+        print(f"\n=== Phase 2: Analyzing confidence peaks ===")
+        peaks = manager.analyze_all_traces()
+
+        if not peaks:
+            print("WARNING: No confidence peaks found above threshold!")
+            print("Skipping branching phase...")
+            branch_gen_time = 0
+        else:
+            # Select peaks for branching
+            selected_peaks = manager.select_peaks_for_branching()
+
+            # Phase 3: Generate branches from peaks
+            print(f"\n=== Phase 3: Generating {len(selected_peaks)} branches ===")
+            branch_gen_start = time.time()
+
+            # Prepare branch prompts
+            branch_prompts_info = manager.prepare_branch_prompts(selected_peaks)
+
+            # Generate branches with prefix caching
+            for i, branch_info in enumerate(branch_prompts_info):
+                print(f"\nBranching {i+1}/{len(branch_prompts_info)}:")
+                print(f"  From trace {branch_info['parent_trace_idx']} at position {branch_info['branch_point']}")
+                print(f"  Parent confidence: {branch_info['parent_confidence']:.3f}")
+
+                # Reconstruct prompt from prefix tokens
+                prefix_prompt = prepare_prompt_from_tokens(
+                    branch_info['prompt_tokens'],
+                    self.tokenizer
+                )
+
+                # Generate continuation from branch point
+                branch_params = copy.deepcopy(sampling_params)
+                branch_params.n = 1
+                branch_params.logprobs = 20
+
+                branch_output = self.llm.generate([prefix_prompt], branch_params)
+                branch_vllm = branch_output[0].outputs[0]
+
+                # Process branch output
+                branch_text = branch_vllm.text
+                branch_token_ids = branch_vllm.token_ids
+                branch_logprobs = branch_vllm.logprobs
+
+                # Calculate confidence for full branch
+                branch_confs = compute_confidence(branch_logprobs) if branch_logprobs else []
+
+                # Extract answer from branch
+                branch_answer = extract_answer(branch_text)
+
+                # Create branch trace
+                branch_trace = manager.create_branch_trace(
+                    parent_trace_idx=branch_info['parent_trace_idx'],
+                    branch_point=branch_info['branch_point'],
+                    new_text=branch_text,
+                    new_token_ids=branch_token_ids,
+                    new_confs=branch_confs,
+                    extracted_answer=branch_answer
+                )
+
+                print(f"  Generated {branch_trace.tokens_generated} new tokens")
+                print(f"  Branch answer: {branch_answer}")
+
+            branch_gen_time = time.time() - branch_gen_start
+            print(f"\nBranch generation completed in {branch_gen_time:.2f}s")
+
+        # Compile results
+        output.generation_time = initial_gen_time + branch_gen_time
+
+        # Convert traces to output format
+        all_traces = []
+        total_tokens_generated = 0
+
+        for trace in manager.traces:
+            trace_dict = {
+                'trace_idx': trace.trace_idx,
+                'depth': trace.depth,
+                'parent_idx': trace.parent_idx,
+                'branch_point_tokens': trace.branch_point_tokens,
+                'text': trace.text,
+                'token_ids': trace.token_ids,
+                'num_tokens': trace.total_tokens,
+                'tokens_generated': trace.tokens_generated,
+                'confs': trace.confs,
+                'extracted_answer': trace.extracted_answer,
+                'confidence_peaks': [
+                    {
+                        'position': p.position,
+                        'confidence': p.confidence
+                    }
+                    for p in trace.confidence_peaks
+                ]
+            }
+            all_traces.append(trace_dict)
+            total_tokens_generated += trace.tokens_generated
+
+        output.all_traces = all_traces
+        output.total_tokens = total_tokens_generated  # Only count generated tokens
+        output.total_traces_count = len(all_traces)
+        output.avg_tokens_per_trace = total_tokens_generated / len(all_traces) if all_traces else 0
+
+        # Store peak branching statistics
+        output.peak_branching_stats = manager.get_statistics()
+
+        # Perform weighted voting (weight branches slightly higher)
+        voting_answers = []
+        voting_weights = []
+
+        for trace in all_traces:
+            if trace['extracted_answer']:
+                voting_answers.append(trace['extracted_answer'])
+                # Weight: 1.0 for initial traces, 1.1 for branches
+                weight = 1.0 if trace['depth'] == 0 else 1.1
+                voting_weights.append(weight)
+
+        output.voting_answers = voting_answers
+        output.voting_weights = voting_weights
+        output.voted_answer = weighted_majority_vote(voting_answers, voting_weights)
+        output.final_answer = output.voted_answer
+
+        # Print summary
+        manager.print_summary()
+
+        output.processing_time = time.time() - processing_start
 
         return output
