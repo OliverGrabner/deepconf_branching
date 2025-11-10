@@ -326,6 +326,7 @@ def process_question_peak_branching(
         'initial_trace_accuracy': initial_accuracy,
         'branch_trace_accuracy': branch_accuracy,
         'overall_trace_accuracy': overall_accuracy,
+        'individual_trace_accuracy': overall_accuracy,  # Use overall as individual for peak branching
         'vote_distribution': vote_distribution,
         'valid_traces': valid_traces,
         'peak_branching_stats': peak_stats,
