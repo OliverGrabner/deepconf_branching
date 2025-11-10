@@ -180,11 +180,12 @@ def process_question_peak_branching(
     question: str,
     ground_truth: str,
     initial_traces: int,
-    total_traces: int,
+    max_traces: int,
     confidence_threshold: float,
     peak_window_size: int,
     min_peak_distance: int,
     peak_selection_ratio: float,
+    exclusion_zone_size: int,
     sampling_params: SamplingParams,
     model_type: str,
     dataset_name: str
@@ -197,11 +198,12 @@ def process_question_peak_branching(
         question: Question text
         ground_truth: Ground truth answer
         initial_traces: Number of initial traces
-        total_traces: Total traces after branching
+        max_traces: Maximum total traces (stops when next doubling would exceed)
         confidence_threshold: Minimum confidence for peaks
         peak_window_size: Window size for peak detection
-        min_peak_distance: Minimum distance between peaks
+        min_peak_distance: Minimum distance between peaks in same trace
         peak_selection_ratio: Valid range for peaks
+        exclusion_zone_size: Size of exclusion zone around used peaks
         sampling_params: Sampling parameters
         model_type: Model type for prompt formatting
         dataset_name: Dataset name (for answer extraction)
@@ -217,11 +219,12 @@ def process_question_peak_branching(
         prompt=prompt,
         mode="peak_branching",
         initial_traces=initial_traces,
-        total_traces=total_traces,
+        max_traces=max_traces,
         confidence_threshold=confidence_threshold,
         peak_window_size=peak_window_size,
         min_peak_distance=min_peak_distance,
         peak_selection_ratio=peak_selection_ratio,
+        exclusion_zone_size=exclusion_zone_size,
         sampling_params=sampling_params,
         compute_multiple_voting=False
     )
@@ -254,7 +257,8 @@ def process_question_peak_branching(
 
             trace_info = {
                 'trace_idx': trace.get('trace_idx'),
-                'depth': trace.get('depth', 0),
+                'stage': trace.get('stage', 0),  # Multi-stage support
+                'depth': trace.get('depth', 0),  # Kept for compatibility
                 'parent_idx': trace.get('parent_idx'),
                 'branch_point_tokens': trace.get('branch_point_tokens'),
                 'answer': extracted_answer,
@@ -264,8 +268,8 @@ def process_question_peak_branching(
             }
             valid_traces.append(trace_info)
 
-            # Separate by depth
-            if trace.get('depth', 0) == 0:
+            # Separate by stage (0 = initial, 1+ = branches)
+            if trace.get('stage', 0) == 0:
                 initial_traces_list.append(trace_info)
             else:
                 branch_traces_list.append(trace_info)
@@ -277,8 +281,8 @@ def process_question_peak_branching(
         weights = []
         for trace_info in valid_traces:
             weighted_answers.append(trace_info['answer'])
-            # Weight: 1.0 for initial, 1.1 for branches
-            weight = 1.0 if trace_info['depth'] == 0 else 1.1
+            # Weight: 1.0 for initial (stage 0), 1.1 for ALL branches (stage 1+)
+            weight = 1.0 if trace_info['stage'] == 0 else 1.1
             weights.append(weight)
 
         # Calculate weighted vote
@@ -563,16 +567,18 @@ def main():
     # Peak Branching parameters
     parser.add_argument('--initial_traces', type=int, default=8,
                        help='[Peak Branching] Number of initial traces')
-    parser.add_argument('--total_traces', type=int, default=32,
-                       help='[Peak Branching] Total traces after branching')
+    parser.add_argument('--max_traces', type=int, default=64,
+                       help='[Peak Branching] Maximum total traces (stops when next doubling would exceed)')
     parser.add_argument('--confidence_threshold', type=float, default=1.5,
                        help='[Peak Branching] Minimum confidence for peaks')
     parser.add_argument('--peak_window_size', type=int, default=512,
                        help='[Peak Branching] Window size for peak detection')
     parser.add_argument('--min_peak_distance', type=int, default=256,
-                       help='[Peak Branching] Minimum distance between peaks')
+                       help='[Peak Branching] Minimum distance between peaks in same trace')
     parser.add_argument('--peak_selection_ratio', type=float, default=0.8,
                        help='[Peak Branching] Valid range for peaks (0.8 = middle 80%)')
+    parser.add_argument('--exclusion_zone_size', type=int, default=200,
+                       help='[Peak Branching] Size of exclusion zone around used peaks')
 
     # Sampling parameters
     parser.add_argument('--temperature', type=float, default=0.8,
@@ -639,10 +645,11 @@ def main():
         print(f"Selected percent: {args.selected_percent*100:.0f}%")
         print(f"Iterations: {args.n_iterations}, Branch goal: {args.branch_goal*100:.0f}%")
     else:  # peak_branching
-        print(f"Initial traces: {args.initial_traces}, Total traces: {args.total_traces}")
+        print(f"Initial traces: {args.initial_traces}, Max traces: {args.max_traces}")
         print(f"Confidence threshold: {args.confidence_threshold}")
         print(f"Peak window: {args.peak_window_size}, Min distance: {args.min_peak_distance}")
         print(f"Peak selection ratio: {args.peak_selection_ratio*100:.0f}%")
+        print(f"Exclusion zone size: {args.exclusion_zone_size} tokens")
 
     print(f"Temperature: {args.temperature}")
     print(f"GPUs: {args.tensor_parallel_size}")
@@ -749,11 +756,12 @@ def main():
                         question=question,
                         ground_truth=ground_truth,
                         initial_traces=args.initial_traces,
-                        total_traces=args.total_traces,
+                        max_traces=args.max_traces,
                         confidence_threshold=args.confidence_threshold,
                         peak_window_size=args.peak_window_size,
                         min_peak_distance=args.min_peak_distance,
                         peak_selection_ratio=args.peak_selection_ratio,
+                        exclusion_zone_size=args.exclusion_zone_size,
                         sampling_params=sampling_params,
                         model_type=args.model_type,
                         dataset_name=dataset_name

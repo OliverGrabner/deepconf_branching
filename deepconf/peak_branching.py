@@ -1,14 +1,18 @@
 """
-Confidence Peak Branching Manager
+Confidence Peak Branching Manager with Multi-Stage Support
 
 This module implements a novel branching strategy that:
 1. Generates initial traces independently
 2. Identifies high-confidence peaks within traces
 3. Spawns new reasoning paths from those peak points
+4. Supports multi-stage branching with doubling strategy
+5. Prevents duplicate peaks using exclusion zones
 
-Key difference from traditional branching:
-- Branches from WITHIN traces at confidence peaks (not from the end)
-- Single branching round after initial generation
+Key features:
+- Multi-stage branching (doubles at each stage)
+- Branches from WITHIN traces at confidence peaks
+- Can branch from branches (deeper genealogy)
+- Exclusion zones prevent duplicate peaks
 - Leverages vLLM prefix caching for efficiency
 
 Copyright (c) Meta Platforms, Inc. and affiliates.
@@ -38,7 +42,7 @@ class PeakBranch:
     parent_idx: int  # Original trace index
     branch_point: int  # Token position where branched
     parent_confidence: float  # Confidence at branch point
-    depth: int  # 0 for initial, 1 for branches
+    stage: int  # Which branching stage (0=initial, 1+ for branches)
     timestamp: float
 
 
@@ -46,7 +50,8 @@ class PeakBranch:
 class PeakTrace:
     """Enhanced trace with peak branching metadata"""
     trace_idx: int
-    depth: int  # 0 for initial traces, 1 for branches
+    stage: int  # 0 for initial, 1+ for branch stages
+    depth: int  # Kept for compatibility, same as stage
     parent_idx: Optional[int]  # None for initial traces
     branch_point_tokens: Optional[int]  # Where this branched from parent
 
@@ -77,44 +82,49 @@ class PeakTrace:
 
 class PeakBranchingManager:
     """
-    Manages confidence peak-based branching for self-consistency
+    Manages confidence peak-based branching for self-consistency with multi-stage support
 
     Key responsibilities:
     - Detect confidence peaks in completed traces
     - Rank peaks globally across all traces
-    - Manage branching from high-confidence points
+    - Manage multi-stage branching with doubling
+    - Prevent duplicate peaks using exclusion zones
     - Track genealogy and token accounting
     """
 
     def __init__(
         self,
         initial_traces: int = 8,
-        total_traces: int = 32,
+        max_traces: int = 64,
         confidence_threshold: float = 1.5,
         window_size: int = 512,
         min_peak_distance: int = 256,
-        peak_selection_ratio: float = 0.8
+        peak_selection_ratio: float = 0.8,
+        exclusion_zone_size: int = 200
     ):
         """
-        Initialize peak branching manager
+        Initialize peak branching manager with multi-stage support
 
         Args:
             initial_traces: Number of initial independent traces
-            total_traces: Total traces after branching
+            max_traces: Maximum total traces (stops when next doubling would exceed)
             confidence_threshold: Minimum confidence for a peak
             window_size: Size of sliding window for confidence calculation
-            min_peak_distance: Minimum tokens between peaks
-            peak_selection_ratio: Fraction of peak position (0.2-0.8) for valid peaks
+            min_peak_distance: Minimum tokens between peaks in same trace
+            peak_selection_ratio: Fraction of trace where peaks are valid (0.8 = middle 80%)
+            exclusion_zone_size: Size of exclusion zone around used peaks
         """
         self.initial_traces = initial_traces
-        self.total_traces = total_traces
+        self.max_traces = max_traces
         self.confidence_threshold = confidence_threshold
         self.window_size = window_size
         self.min_peak_distance = min_peak_distance
         self.peak_selection_ratio = peak_selection_ratio
+        self.exclusion_zone_size = exclusion_zone_size
 
-        # Calculate branching parameters
-        self.branches_to_create = total_traces - initial_traces
+        # Calculate branching stages (doubling strategy)
+        self.branching_stages = self.calculate_branching_stages()
+        self.current_stage = 0
 
         # State tracking
         self.traces: List[PeakTrace] = []
@@ -122,15 +132,41 @@ class PeakBranchingManager:
         self.branches: List[PeakBranch] = []
         self.next_trace_idx = 0
 
-        print(f"\n=== Peak Branching Manager Initialized ===")
+        # Exclusion zones to prevent duplicate peaks
+        self.used_peak_zones: List[Tuple[int, int, int]] = []  # (trace_idx, start, end)
+
+        print(f"\n=== Multi-Stage Peak Branching Manager Initialized ===")
         print(f"Initial traces: {initial_traces}")
-        print(f"Total traces target: {total_traces}")
-        print(f"Branches to create: {self.branches_to_create}")
+        print(f"Max traces: {max_traces}")
+        print(f"Branching stages: {self.branching_stages}")
+        total_after_stages = initial_traces + sum(self.branching_stages)
+        print(f"Total traces after all stages: {total_after_stages}")
         print(f"Confidence threshold: {confidence_threshold}")
         print(f"Window size: {window_size} tokens")
         print(f"Min peak distance: {min_peak_distance} tokens")
+        print(f"Exclusion zone size: {exclusion_zone_size} tokens")
         print(f"Peak selection range: {peak_selection_ratio*100:.0f}% of trace")
-        print("="*45)
+        print("="*50)
+
+    def calculate_branching_stages(self) -> List[int]:
+        """
+        Calculate branching stages using doubling strategy
+
+        Examples:
+        - initial=8, max=32: stages=[8, 16] → 8+8+16=32
+        - initial=8, max=64: stages=[8, 16, 32] → 8+8+16+32=64
+        - initial=4, max=32: stages=[4, 8, 16] → 4+4+8+16=32
+        """
+        stages = []
+        current_total = self.initial_traces
+        next_branches = self.initial_traces  # Start by adding same as initial
+
+        while current_total + next_branches <= self.max_traces:
+            stages.append(next_branches)
+            current_total += next_branches
+            next_branches *= 2  # Double for next stage
+
+        return stages
 
     def create_initial_trace(
         self,
@@ -139,10 +175,11 @@ class PeakBranchingManager:
         confs: List[float],
         extracted_answer: Optional[str] = None
     ) -> PeakTrace:
-        """Create an initial trace (depth 0)"""
+        """Create an initial trace (stage 0)"""
         trace = PeakTrace(
             trace_idx=self.next_trace_idx,
-            depth=0,
+            stage=0,
+            depth=0,  # For compatibility
             parent_idx=None,
             branch_point_tokens=None,
             text=text,
@@ -156,9 +193,26 @@ class PeakBranchingManager:
         self.next_trace_idx += 1
         return trace
 
-    def find_confidence_peaks(self, trace: PeakTrace) -> List[ConfidencePeak]:
+    def is_position_in_exclusion_zone(self, trace_idx: int, position: int) -> bool:
+        """Check if a position is in any exclusion zone"""
+        for zone_trace_idx, zone_start, zone_end in self.used_peak_zones:
+            if trace_idx == zone_trace_idx and zone_start <= position <= zone_end:
+                return True
+        return False
+
+    def mark_exclusion_zone(self, trace_idx: int, position: int):
+        """Mark an exclusion zone around a used peak"""
+        zone_start = max(0, position - self.exclusion_zone_size // 2)
+        zone_end = position + self.exclusion_zone_size // 2
+        self.used_peak_zones.append((trace_idx, zone_start, zone_end))
+
+    def find_confidence_peaks(self, trace: PeakTrace, check_exclusions: bool = False) -> List[ConfidencePeak]:
         """
         Find confidence peaks in a trace using sliding window
+
+        Args:
+            trace: Trace to analyze
+            check_exclusions: Whether to check exclusion zones
 
         Returns:
             List of ConfidencePeak objects
@@ -184,7 +238,7 @@ class PeakBranchingManager:
                 window_avgs[i] > window_avgs[i+1] and
                 window_avgs[i] > self.confidence_threshold):
 
-                # Check position is in valid range (20-80% of trace)
+                # Check position is in valid range
                 position = i + self.window_size // 2  # Center of window
                 trace_fraction = position / len(trace.confs)
 
@@ -192,7 +246,11 @@ class PeakBranchingManager:
                 max_fraction = 1 - min_fraction
 
                 if min_fraction <= trace_fraction <= max_fraction:
-                    # Ensure minimum distance from other peaks
+                    # Check exclusion zones if required
+                    if check_exclusions and self.is_position_in_exclusion_zone(trace.trace_idx, position):
+                        continue
+
+                    # Ensure minimum distance from other peaks in this trace
                     too_close = False
                     for p in peaks:
                         if abs(p.position - position) < self.min_peak_distance:
@@ -217,51 +275,60 @@ class PeakBranchingManager:
 
         return peaks
 
-    def analyze_all_traces(self) -> List[ConfidencePeak]:
+    def analyze_all_traces_for_stage(self, stage: int) -> List[ConfidencePeak]:
         """
-        Analyze all initial traces to find and rank confidence peaks
+        Analyze all current traces to find peaks for a given stage
+
+        Args:
+            stage: Current branching stage (0 for initial analysis)
 
         Returns:
-            Sorted list of all peaks (highest confidence first)
+            Sorted list of valid peaks (highest confidence first)
         """
-        print(f"\nAnalyzing {len(self.traces)} traces for confidence peaks...")
+        print(f"\nAnalyzing {len(self.traces)} traces for confidence peaks (Stage {stage})...")
 
         all_peaks = []
         for trace in self.traces:
-            if trace.depth == 0:  # Only analyze initial traces
-                peaks = self.find_confidence_peaks(trace)
-                trace.confidence_peaks = peaks
-                all_peaks.extend(peaks)
+            # Find peaks, checking exclusions for stages > 0
+            peaks = self.find_confidence_peaks(trace, check_exclusions=(stage > 0))
 
-                if peaks:
-                    print(f"  Trace {trace.trace_idx}: Found {len(peaks)} peaks")
-                    for p in peaks[:2]:  # Show top 2
-                        print(f"    - Position {p.position}, confidence {p.confidence:.3f}")
+            if stage == 0:
+                # Store peaks in trace for initial analysis
+                trace.confidence_peaks = peaks
+
+            all_peaks.extend(peaks)
+
+            if peaks:
+                print(f"  Trace {trace.trace_idx} (stage {trace.stage}): Found {len(peaks)} peaks")
 
         # Sort by confidence (highest first)
         all_peaks.sort(key=lambda p: p.confidence, reverse=True)
 
-        print(f"\nTotal peaks found: {len(all_peaks)}")
+        print(f"Total valid peaks found: {len(all_peaks)}")
         if all_peaks:
             print(f"Top confidence: {all_peaks[0].confidence:.3f}")
             print(f"Peaks above threshold: {sum(1 for p in all_peaks if p.confidence > self.confidence_threshold)}")
 
-        self.all_peaks = all_peaks
         return all_peaks
 
-    def select_peaks_for_branching(self) -> List[ConfidencePeak]:
+    def select_peaks_for_stage(self, peaks: List[ConfidencePeak], num_branches: int) -> List[ConfidencePeak]:
         """
-        Select which peaks to branch from
+        Select top peaks for branching in current stage
+
+        Args:
+            peaks: Available peaks
+            num_branches: Number of branches to create
 
         Returns:
-            List of selected peaks for branching
+            Selected peaks for branching
         """
-        # Take top peaks up to branches_to_create
-        selected = self.all_peaks[:self.branches_to_create]
+        # Take top peaks up to num_branches
+        selected = peaks[:num_branches]
 
         print(f"\nSelected {len(selected)} peaks for branching:")
         for i, peak in enumerate(selected[:5]):  # Show first 5
-            print(f"  {i+1}. Trace {peak.trace_idx} @ position {peak.position} (conf: {peak.confidence:.3f})")
+            parent_trace = self.traces[peak.trace_idx]
+            print(f"  {i+1}. Trace {peak.trace_idx} (stage {parent_trace.stage}) @ position {peak.position} (conf: {peak.confidence:.3f})")
 
         if len(selected) > 5:
             print(f"  ... and {len(selected)-5} more")
@@ -273,16 +340,19 @@ class PeakBranchingManager:
         Prepare prompts for branching from selected peaks
 
         Returns:
-            List of dicts with branch information:
-            - 'prompt_tokens': Token IDs to use as prompt
-            - 'parent_trace_idx': Original trace index
-            - 'branch_point': Token position of branch
-            - 'parent_confidence': Confidence at branch point
+            List of dicts with branch information
         """
         branch_prompts = []
 
         for peak in selected_peaks:
-            parent_trace = self.traces[peak.trace_idx]
+            parent_trace = None
+            for trace in self.traces:
+                if trace.trace_idx == peak.trace_idx:
+                    parent_trace = trace
+                    break
+
+            if parent_trace is None:
+                continue
 
             # Extract prefix tokens up to peak position
             prefix_tokens = parent_trace.get_prefix_tokens(peak.position)
@@ -290,6 +360,7 @@ class PeakBranchingManager:
             branch_info = {
                 'prompt_tokens': prefix_tokens,
                 'parent_trace_idx': peak.trace_idx,
+                'parent_stage': parent_trace.stage,
                 'branch_point': peak.position,
                 'parent_confidence': peak.confidence,
                 'prefix_text_preview': parent_trace.get_prefix_text(peak.position)[-100:]  # Last 100 chars
@@ -302,31 +373,45 @@ class PeakBranchingManager:
         self,
         parent_trace_idx: int,
         branch_point: int,
+        stage: int,
         new_text: str,
         new_token_ids: List[int],
         new_confs: List[float],
         extracted_answer: Optional[str] = None
     ) -> PeakTrace:
         """
-        Create a branch trace (depth 1)
+        Create a branch trace for a given stage
 
         Args:
             parent_trace_idx: Index of parent trace
             branch_point: Token position where branched
+            stage: Current branching stage (1+)
             new_text: Complete text (including inherited prefix)
             new_token_ids: Complete token IDs
             new_confs: Complete confidence scores
             extracted_answer: Extracted answer from branch
         """
-        parent_trace = self.traces[parent_trace_idx]
+        parent_trace = None
+        for trace in self.traces:
+            if trace.trace_idx == parent_trace_idx:
+                parent_trace = trace
+                break
+
+        if parent_trace is None:
+            raise ValueError(f"Parent trace {parent_trace_idx} not found")
 
         # Calculate token metrics
-        tokens_generated = len(new_token_ids) - branch_point  # Only NEW tokens
+        tokens_generated = max(0, len(new_token_ids) - branch_point)  # Only NEW tokens, prevent negative
         total_tokens = len(new_token_ids)
+
+        # Warn if branch was truncated (branch_point beyond generated tokens)
+        if branch_point > len(new_token_ids):
+            print(f"  ⚠️  Branch truncated: branch_point {branch_point} > total tokens {len(new_token_ids)}")
 
         trace = PeakTrace(
             trace_idx=self.next_trace_idx,
-            depth=1,
+            stage=stage,
+            depth=stage,  # For compatibility
             parent_idx=parent_trace_idx,
             branch_point_tokens=branch_point,
             text=new_text,
@@ -343,7 +428,7 @@ class PeakBranchingManager:
             parent_idx=parent_trace_idx,
             branch_point=branch_point,
             parent_confidence=parent_trace.confs[branch_point] if branch_point < len(parent_trace.confs) else 0,
-            depth=1,
+            stage=stage,
             timestamp=time.time()
         )
         self.branches.append(branch_event)
@@ -352,51 +437,115 @@ class PeakBranchingManager:
         self.next_trace_idx += 1
         return trace
 
+    def run_branching_stage(self, stage_idx: int, num_branches: int) -> List[ConfidencePeak]:
+        """
+        Run a single branching stage
+
+        Args:
+            stage_idx: Stage index (0-based)
+            num_branches: Number of branches to create in this stage
+
+        Returns:
+            List of selected peaks for external branch generation
+        """
+        stage_num = stage_idx + 1  # Human-readable stage number
+
+        print(f"\n{'='*60}")
+        print(f"STAGE {stage_num}: Creating {num_branches} branches")
+        print(f"Current traces: {len(self.traces)}")
+        print(f"{'='*60}")
+
+        # Find peaks in all current traces
+        peaks = self.analyze_all_traces_for_stage(stage_num)
+
+        if not peaks:
+            print(f"WARNING: No valid peaks found for stage {stage_num}")
+            return []
+
+        # Select top peaks for this stage
+        selected_peaks = self.select_peaks_for_stage(peaks, min(num_branches, len(peaks)))
+
+        # Mark exclusion zones for selected peaks
+        for peak in selected_peaks:
+            self.mark_exclusion_zone(peak.trace_idx, peak.position)
+
+        print(f"Marked {len(selected_peaks)} exclusion zones")
+
+        return selected_peaks
+
     def get_statistics(self) -> Dict[str, Any]:
-        """Get statistics about the branching process"""
-        initial_traces = [t for t in self.traces if t.depth == 0]
-        branch_traces = [t for t in self.traces if t.depth == 1]
+        """Get comprehensive statistics about the branching process"""
+        # Group traces by stage
+        traces_by_stage = {}
+        for trace in self.traces:
+            stage = trace.stage
+            if stage not in traces_by_stage:
+                traces_by_stage[stage] = []
+            traces_by_stage[stage].append(trace)
 
         # Calculate token savings from prefix caching
         total_tokens_generated = sum(t.tokens_generated for t in self.traces)
         total_tokens_including_prefix = sum(t.total_tokens for t in self.traces)
         prefix_savings = total_tokens_including_prefix - total_tokens_generated
 
+        # Stage-specific stats
+        stage_stats = {}
+        for stage, stage_traces in traces_by_stage.items():
+            stage_stats[f'stage_{stage}_traces'] = len(stage_traces)
+            stage_stats[f'stage_{stage}_avg_tokens'] = np.mean([t.tokens_generated for t in stage_traces]) if stage_traces else 0
+
         stats = {
             'total_traces': len(self.traces),
-            'initial_traces': len(initial_traces),
-            'branch_traces': len(branch_traces),
+            'initial_traces': len(traces_by_stage.get(0, [])),
+            'total_branch_traces': len(self.traces) - len(traces_by_stage.get(0, [])),
+            'num_stages': len(self.branching_stages),
+            'branching_stages': self.branching_stages,
+            'traces_by_stage': {k: len(v) for k, v in traces_by_stage.items()},
             'total_peaks_found': len(self.all_peaks),
-            'peaks_above_threshold': sum(1 for p in self.all_peaks if p.confidence > self.confidence_threshold),
             'branches_created': len(self.branches),
+            'exclusion_zones': len(self.used_peak_zones),
             'total_tokens_generated': total_tokens_generated,
             'total_tokens_with_prefix': total_tokens_including_prefix,
             'prefix_cache_savings': prefix_savings,
             'prefix_cache_savings_pct': (prefix_savings / total_tokens_including_prefix * 100) if total_tokens_including_prefix > 0 else 0,
-            'avg_tokens_initial': np.mean([t.tokens_generated for t in initial_traces]) if initial_traces else 0,
-            'avg_tokens_branch': np.mean([t.tokens_generated for t in branch_traces]) if branch_traces else 0,
             'avg_branch_point': np.mean([b.branch_point for b in self.branches]) if self.branches else 0,
-            'avg_peak_confidence': np.mean([p.confidence for p in self.all_peaks]) if self.all_peaks else 0
         }
+
+        # Add stage-specific stats
+        stats.update(stage_stats)
 
         return stats
 
     def print_summary(self):
-        """Print summary of branching results"""
+        """Print comprehensive summary of multi-stage branching results"""
         stats = self.get_statistics()
 
-        print("\n" + "="*60)
-        print("PEAK BRANCHING SUMMARY")
-        print("="*60)
-        print(f"Total traces: {stats['total_traces']} ({stats['initial_traces']} initial + {stats['branch_traces']} branches)")
-        print(f"Peaks found: {stats['total_peaks_found']} ({stats['peaks_above_threshold']} above threshold)")
-        print(f"Branches created: {stats['branches_created']}")
+        print("\n" + "="*70)
+        print("MULTI-STAGE PEAK BRANCHING SUMMARY")
+        print("="*70)
+
+        # Trace distribution
+        print(f"Total traces: {stats['total_traces']}")
+        print(f"  Initial: {stats['initial_traces']}")
+        for stage in range(1, stats['num_stages'] + 1):
+            count = stats['traces_by_stage'].get(stage, 0)
+            if count > 0:
+                print(f"  Stage {stage}: {count} branches")
+
+        print(f"\nBranching stages executed: {self.branching_stages}")
+        print(f"Exclusion zones created: {stats['exclusion_zones']}")
+
         print(f"\nToken Usage:")
         print(f"  Total generated: {stats['total_tokens_generated']:,}")
         print(f"  With prefix reuse: {stats['total_tokens_with_prefix']:,}")
         print(f"  Prefix cache savings: {stats['prefix_cache_savings']:,} ({stats['prefix_cache_savings_pct']:.1f}%)")
-        print(f"  Avg initial trace: {stats['avg_tokens_initial']:.0f} tokens")
-        print(f"  Avg branch trace: {stats['avg_tokens_branch']:.0f} tokens (new only)")
-        print(f"  Avg branch point: {stats['avg_branch_point']:.0f} tokens into trace")
-        print(f"  Avg peak confidence: {stats['avg_peak_confidence']:.3f}")
-        print("="*60)
+
+        # Per-stage token averages
+        print(f"\nAverage tokens per stage:")
+        for stage in range(stats['num_stages'] + 1):
+            key = f'stage_{stage}_avg_tokens'
+            if key in stats:
+                print(f"  Stage {stage}: {stats[key]:.0f} tokens")
+
+        print(f"\nAvg branch point: {stats['avg_branch_point']:.0f} tokens into trace")
+        print("="*70)

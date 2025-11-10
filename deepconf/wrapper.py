@@ -88,11 +88,12 @@ class DeepThinkLLM:
         average_tokens: int = 8000,
         # Peak branching mode parameters
         initial_traces: int = 8,
-        total_traces: int = 32,
+        max_traces: int = 64,
         confidence_threshold: float = 1.5,
         peak_window_size: int = 512,
         min_peak_distance: int = 256,
         peak_selection_ratio: float = 0.8,
+        exclusion_zone_size: int = 200,
         # Common parameters
         window_size: int = 2048,
         sampling_params: Optional[SamplingParams] = None,
@@ -118,11 +119,12 @@ class DeepThinkLLM:
             branch_goal: Target completion % for branching (branching mode)
             average_tokens: Historical average tokens (branching mode)
             initial_traces: Initial traces for peak branching mode
-            total_traces: Total traces target for peak branching mode
+            max_traces: Maximum total traces (stops when next doubling would exceed)
             confidence_threshold: Minimum confidence for peaks (peak branching mode)
             peak_window_size: Window size for peak detection (peak branching mode)
             min_peak_distance: Minimum distance between peaks (peak branching mode)
             peak_selection_ratio: Valid range for peaks (peak branching mode)
+            exclusion_zone_size: Size of exclusion zone around used peaks (peak branching mode)
             window_size: Window size for confidence computation
             sampling_params: Custom vLLM sampling parameters
             compute_multiple_voting: Whether to compute multiple voting method results
@@ -175,17 +177,18 @@ class DeepThinkLLM:
         elif mode == "peak_branching":
             output.config.update({
                 "initial_traces": initial_traces,
-                "total_traces": total_traces,
+                "max_traces": max_traces,
                 "confidence_threshold": confidence_threshold,
                 "peak_window_size": peak_window_size,
                 "min_peak_distance": min_peak_distance,
                 "peak_selection_ratio": peak_selection_ratio,
+                "exclusion_zone_size": exclusion_zone_size,
             })
             result = self._deepthink_peak_branching(
                 prompt, output,
-                initial_traces, total_traces, confidence_threshold,
+                initial_traces, max_traces, confidence_threshold,
                 peak_window_size, min_peak_distance, peak_selection_ratio,
-                window_size, sampling_params
+                exclusion_zone_size, window_size, sampling_params
             )
         else:
             output.config.update({
@@ -600,36 +603,40 @@ class DeepThinkLLM:
         prompt: str,
         output: DeepThinkOutput,
         initial_traces: int,
-        total_traces: int,
+        max_traces: int,
         confidence_threshold: float,
         peak_window_size: int,
         min_peak_distance: int,
         peak_selection_ratio: float,
+        exclusion_zone_size: int,
         window_size: int,
         sampling_params: Optional[SamplingParams]
     ) -> DeepThinkOutput:
-        """Peak branching - branch from confidence peaks within traces"""
+        """Multi-stage peak branching - branch from confidence peaks with doubling strategy"""
 
         processing_start = time.time()
 
-        # Initialize peak branching manager
+        # Initialize peak branching manager with multi-stage support
         manager = PeakBranchingManager(
             initial_traces=initial_traces,
-            total_traces=total_traces,
+            max_traces=max_traces,
             confidence_threshold=confidence_threshold,
             window_size=peak_window_size,
             min_peak_distance=min_peak_distance,
-            peak_selection_ratio=peak_selection_ratio
+            peak_selection_ratio=peak_selection_ratio,
+            exclusion_zone_size=exclusion_zone_size
         )
 
         # Store config in output
         output.peak_branching_config = {
             'initial_traces': initial_traces,
-            'total_traces': total_traces,
+            'max_traces': max_traces,
             'confidence_threshold': confidence_threshold,
             'peak_window_size': peak_window_size,
             'min_peak_distance': min_peak_distance,
-            'peak_selection_ratio': peak_selection_ratio
+            'peak_selection_ratio': peak_selection_ratio,
+            'exclusion_zone_size': exclusion_zone_size,
+            'branching_stages': manager.branching_stages
         }
 
         # Phase 1: Generate initial traces
@@ -640,6 +647,7 @@ class DeepThinkLLM:
         initial_params = copy.deepcopy(sampling_params)
         initial_params.n = initial_traces
         initial_params.logprobs = 20  # Need logprobs for confidence
+        initial_params.stop = ["}\n\n", "}\n"]  # Stop after completing \boxed{answer}
 
         print(f"Generating initial traces...")
         vllm_outputs = self.llm.generate([prompt], initial_params)
@@ -668,29 +676,32 @@ class DeepThinkLLM:
 
             print(f"  Trace {i}: {len(token_ids)} tokens, answer: {extracted_answer}")
 
-        # Phase 2: Analyze traces for confidence peaks
-        print(f"\n=== Phase 2: Analyzing confidence peaks ===")
-        peaks = manager.analyze_all_traces()
+        # Phase 2: Multi-Stage Branching
+        print(f"\n=== Phase 2: Multi-Stage Branching ===")
+        total_branch_gen_time = 0
 
-        if not peaks:
-            print("WARNING: No confidence peaks found above threshold!")
-            print("Skipping branching phase...")
-            branch_gen_time = 0
-        else:
-            # Select peaks for branching
-            selected_peaks = manager.select_peaks_for_branching()
+        # Execute each branching stage
+        for stage_idx, num_branches in enumerate(manager.branching_stages):
+            stage_num = stage_idx + 1
 
-            # Phase 3: Generate branches from peaks
-            print(f"\n=== Phase 3: Generating {len(selected_peaks)} branches ===")
-            branch_gen_start = time.time()
+            # Run branching stage to find peaks
+            selected_peaks = manager.run_branching_stage(stage_idx, num_branches)
+
+            if not selected_peaks:
+                print(f"Stage {stage_num}: No valid peaks found, skipping...")
+                continue
+
+            # Generate branches for this stage
+            print(f"\nGenerating {len(selected_peaks)} branches for stage {stage_num}...")
+            stage_gen_start = time.time()
 
             # Prepare branch prompts
             branch_prompts_info = manager.prepare_branch_prompts(selected_peaks)
 
             # Generate branches with prefix caching
             for i, branch_info in enumerate(branch_prompts_info):
-                print(f"\nBranching {i+1}/{len(branch_prompts_info)}:")
-                print(f"  From trace {branch_info['parent_trace_idx']} at position {branch_info['branch_point']}")
+                print(f"\nStage {stage_num} Branch {i+1}/{len(branch_prompts_info)}:")
+                print(f"  From trace {branch_info['parent_trace_idx']} (stage {branch_info['parent_stage']}) @ position {branch_info['branch_point']}")
                 print(f"  Parent confidence: {branch_info['parent_confidence']:.3f}")
 
                 # Reconstruct prompt from prefix tokens
@@ -703,6 +714,8 @@ class DeepThinkLLM:
                 branch_params = copy.deepcopy(sampling_params)
                 branch_params.n = 1
                 branch_params.logprobs = 20
+                branch_params.max_tokens = 64000  # Reduced from 130k to 64k
+                branch_params.stop = ["}\n\n", "}\n"]  # Stop after completing \boxed{answer}
 
                 branch_output = self.llm.generate([prefix_prompt], branch_params)
                 branch_vllm = branch_output[0].outputs[0]
@@ -718,10 +731,11 @@ class DeepThinkLLM:
                 # Extract answer from branch
                 branch_answer = extract_answer(branch_text)
 
-                # Create branch trace
+                # Create branch trace with stage information
                 branch_trace = manager.create_branch_trace(
                     parent_trace_idx=branch_info['parent_trace_idx'],
                     branch_point=branch_info['branch_point'],
+                    stage=stage_num,
                     new_text=branch_text,
                     new_token_ids=branch_token_ids,
                     new_confs=branch_confs,
@@ -731,11 +745,12 @@ class DeepThinkLLM:
                 print(f"  Generated {branch_trace.tokens_generated} new tokens")
                 print(f"  Branch answer: {branch_answer}")
 
-            branch_gen_time = time.time() - branch_gen_start
-            print(f"\nBranch generation completed in {branch_gen_time:.2f}s")
+            stage_gen_time = time.time() - stage_gen_start
+            total_branch_gen_time += stage_gen_time
+            print(f"\nStage {stage_num} generation completed in {stage_gen_time:.2f}s")
 
         # Compile results
-        output.generation_time = initial_gen_time + branch_gen_time
+        output.generation_time = initial_gen_time + total_branch_gen_time
 
         # Convert traces to output format
         all_traces = []
@@ -744,7 +759,8 @@ class DeepThinkLLM:
         for trace in manager.traces:
             trace_dict = {
                 'trace_idx': trace.trace_idx,
-                'depth': trace.depth,
+                'stage': trace.stage,  # Multi-stage support
+                'depth': trace.depth,  # Same as stage for compatibility
                 'parent_idx': trace.parent_idx,
                 'branch_point_tokens': trace.branch_point_tokens,
                 'text': trace.text,
@@ -772,15 +788,15 @@ class DeepThinkLLM:
         # Store peak branching statistics
         output.peak_branching_stats = manager.get_statistics()
 
-        # Perform weighted voting (weight branches slightly higher)
+        # Perform weighted voting (weight ALL branches slightly higher)
         voting_answers = []
         voting_weights = []
 
         for trace in all_traces:
             if trace['extracted_answer']:
                 voting_answers.append(trace['extracted_answer'])
-                # Weight: 1.0 for initial traces, 1.1 for branches
-                weight = 1.0 if trace['depth'] == 0 else 1.1
+                # Weight: 1.0 for initial traces (stage 0), 1.1 for ALL branches (stage 1+)
+                weight = 1.0 if trace['stage'] == 0 else 1.1
                 voting_weights.append(weight)
 
         output.voting_answers = voting_answers
