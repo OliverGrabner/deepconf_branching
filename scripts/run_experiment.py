@@ -567,7 +567,7 @@ def main():
     # Peak Branching parameters
     parser.add_argument('--initial_traces', type=int, default=8,
                        help='[Peak Branching] Number of initial traces')
-    parser.add_argument('--max_traces', type=int, default=64,
+    parser.add_argument('--peak_max_traces', type=int, default=32,
                        help='[Peak Branching] Maximum total traces (stops when next doubling would exceed)')
     parser.add_argument('--confidence_threshold', type=float, default=1.5,
                        help='[Peak Branching] Minimum confidence for peaks')
@@ -645,7 +645,7 @@ def main():
         print(f"Selected percent: {args.selected_percent*100:.0f}%")
         print(f"Iterations: {args.n_iterations}, Branch goal: {args.branch_goal*100:.0f}%")
     else:  # peak_branching
-        print(f"Initial traces: {args.initial_traces}, Max traces: {args.max_traces}")
+        print(f"Initial traces: {args.initial_traces}, Max traces: {args.peak_max_traces}")
         print(f"Confidence threshold: {args.confidence_threshold}")
         print(f"Peak window: {args.peak_window_size}, Min distance: {args.min_peak_distance}")
         print(f"Peak selection ratio: {args.peak_selection_ratio*100:.0f}%")
@@ -756,7 +756,7 @@ def main():
                         question=question,
                         ground_truth=ground_truth,
                         initial_traces=args.initial_traces,
-                        max_traces=args.max_traces,
+                        max_traces=args.peak_max_traces,
                         confidence_threshold=args.confidence_threshold,
                         peak_window_size=args.peak_window_size,
                         min_peak_distance=args.min_peak_distance,
