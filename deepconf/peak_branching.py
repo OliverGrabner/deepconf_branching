@@ -208,7 +208,10 @@ class PeakBranchingManager:
 
     def find_confidence_peaks(self, trace: PeakTrace, check_exclusions: bool = False) -> List[ConfidencePeak]:
         """
-        Find confidence peaks in a trace using sliding window
+        Find confidence peaks in a trace using acceleration detection
+
+        Instead of finding absolute confidence peaks, this finds moments where
+        confidence is accelerating upward most rapidly (biggest positive change in velocity).
 
         Args:
             trace: Trace to analyze
@@ -231,15 +234,28 @@ class PeakBranchingManager:
 
         window_avgs = np.array(window_avgs)
 
-        # Find local maxima above threshold
-        for i in range(1, len(window_avgs) - 1):
-            # Check if it's a local maximum
-            if (window_avgs[i] > window_avgs[i-1] and
-                window_avgs[i] > window_avgs[i+1] and
-                window_avgs[i] > self.confidence_threshold):
+        # Calculate velocity (1st derivative)
+        velocity = np.diff(window_avgs)
 
-                # Check position is in valid range
-                position = i + self.window_size // 2  # Center of window
+        # Calculate acceleration (2nd derivative)
+        acceleration = np.diff(velocity)
+
+        # Find peaks where acceleration is highest (biggest positive acceleration)
+        # These are inflection points where confidence starts increasing rapidly
+        for i in range(1, len(acceleration) - 1):
+            # Check if this is a local maximum in acceleration
+            # AND acceleration is positive (confidence increasing)
+            if (acceleration[i] > acceleration[i-1] and
+                acceleration[i] > acceleration[i+1] and
+                acceleration[i] > 0.01):  # Minimum acceleration threshold
+
+                # Adjust position accounting for double-diff (lost 2 indices)
+                position = i + 2 + self.window_size // 2  # Offset for derivatives
+
+                # Clamp position to valid range
+                if position >= len(trace.confs):
+                    continue
+
                 trace_fraction = position / len(trace.confs)
 
                 min_fraction = (1 - self.peak_selection_ratio) / 2
@@ -264,11 +280,14 @@ class PeakBranchingManager:
                         snippet_end = min(len(trace.text), text_position + 50)
                         text_snippet = trace.text[snippet_start:snippet_end]
 
+                        # Use actual confidence at this position (not acceleration value)
+                        actual_confidence = confs[position] if position < len(confs) else confs[-1]
+
                         peak = ConfidencePeak(
                             trace_idx=trace.trace_idx,
                             position=position,
-                            confidence=window_avgs[i],
-                            window_avg=window_avgs[i],
+                            confidence=actual_confidence,  # Use actual confidence
+                            window_avg=acceleration[i],  # Store acceleration as window_avg for debugging
                             text_snippet=text_snippet
                         )
                         peaks.append(peak)
