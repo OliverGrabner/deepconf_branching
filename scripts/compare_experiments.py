@@ -51,41 +51,44 @@ def extract_metrics(results: Dict[str, Any], experiment_type: str) -> Dict[str, 
     }
 
     # Navigate through results structure
-    for dataset_name, dataset_results in results.items():
-        if dataset_name == 'metadata':
-            continue
+    # JSON has structure: {"metadata": {}, "results": {"gsm8k": [...]}}
+    if 'results' in results:
+        results_dict = results['results']
+        for dataset_name, dataset_results in results_dict.items():
+            if not isinstance(dataset_results, list):
+                continue
 
-        for question_result in dataset_results:
-            # Question accuracy (voted answer)
-            is_correct = question_result.get('is_correct', False)
-            metrics['overall_accuracy'].append(1.0 if is_correct else 0.0)
+            for question_result in dataset_results:
+                # Question accuracy (voted answer)
+                is_correct = question_result.get('is_correct', False)
+                metrics['overall_accuracy'].append(1.0 if is_correct else 0.0)
 
-            # Individual trace accuracy
-            individual_acc = question_result.get('individual_trace_accuracy', 0.0)
-            metrics['individual_accuracy'].append(individual_acc)
+                # Individual trace accuracy
+                individual_acc = question_result.get('individual_trace_accuracy', 0.0)
+                metrics['individual_accuracy'].append(individual_acc)
 
-            # Total NEW tokens generated (varies by experiment type)
-            stats = question_result.get('statistics', {})
+                # Total NEW tokens generated (varies by experiment type)
+                stats = question_result.get('statistics', {})
 
-            if experiment_type == 'traditional':
-                # Traditional: all tokens are new tokens
-                total_tokens = stats.get('total_tokens', 0)
-                metrics['total_tokens_new'].append(total_tokens)
+                if experiment_type == 'traditional':
+                    # Traditional: all tokens are new tokens
+                    total_tokens = stats.get('total_tokens', 0)
+                    metrics['total_tokens_new'].append(total_tokens)
 
-            elif experiment_type == 'branching':
-                # Branching: use total_tokens_generated (only NEW tokens)
-                total_tokens_generated = stats.get('total_tokens_generated', 0)
-                metrics['total_tokens_new'].append(total_tokens_generated)
+                elif experiment_type == 'branching':
+                    # Branching: use total_tokens_generated (only NEW tokens)
+                    total_tokens_generated = stats.get('total_tokens_generated', 0)
+                    metrics['total_tokens_new'].append(total_tokens_generated)
 
-            elif experiment_type == 'peak_branching':
-                # Peak branching: use total_tokens_generated (only NEW tokens)
-                # Note: peak_branching_stats has the breakdown
-                peak_stats = question_result.get('peak_branching_stats', {})
-                total_tokens_generated = peak_stats.get('total_tokens_generated', 0)
-                # Fallback to statistics if not in peak_stats
-                if total_tokens_generated == 0:
-                    total_tokens_generated = stats.get('total_tokens', 0)
-                metrics['total_tokens_new'].append(total_tokens_generated)
+                elif experiment_type == 'peak_branching':
+                    # Peak branching: use total_tokens_generated (only NEW tokens)
+                    # Note: peak_branching_stats has the breakdown
+                    peak_stats = question_result.get('peak_branching_stats', {})
+                    total_tokens_generated = peak_stats.get('total_tokens_generated', 0)
+                    # Fallback to statistics if not in peak_stats
+                    if total_tokens_generated == 0:
+                        total_tokens_generated = stats.get('total_tokens', 0)
+                    metrics['total_tokens_new'].append(total_tokens_generated)
 
     return metrics
 
