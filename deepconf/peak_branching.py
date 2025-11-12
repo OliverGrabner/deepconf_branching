@@ -136,12 +136,14 @@ class PeakBranchingManager:
         self.used_peak_zones: List[Tuple[int, int, int]] = []  # (trace_idx, start, end)
 
         print(f"\n=== Multi-Stage Peak Branching Manager Initialized ===")
+        print(f"🚀 PEAK DETECTION MODE: ACCELERATION-BASED 🚀")
+        print(f"   (Finding moments where confidence accelerates upward)")
         print(f"Initial traces: {initial_traces}")
         print(f"Max traces: {max_traces}")
         print(f"Branching stages: {self.branching_stages}")
         total_after_stages = initial_traces + sum(self.branching_stages)
         print(f"Total traces after all stages: {total_after_stages}")
-        print(f"Confidence threshold: {confidence_threshold}")
+        print(f"Acceleration threshold: {confidence_threshold} (min positive accel)")
         print(f"Window size: {window_size} tokens")
         print(f"Min peak distance: {min_peak_distance} tokens")
         print(f"Exclusion zone size: {exclusion_zone_size} tokens")
@@ -304,7 +306,7 @@ class PeakBranchingManager:
         Returns:
             Sorted list of valid peaks (highest confidence first)
         """
-        print(f"\nAnalyzing {len(self.traces)} traces for confidence peaks (Stage {stage})...")
+        print(f"\n🔍 Analyzing {len(self.traces)} traces for ACCELERATION peaks (Stage {stage})...")
 
         all_peaks = []
         for trace in self.traces:
@@ -318,15 +320,16 @@ class PeakBranchingManager:
             all_peaks.extend(peaks)
 
             if peaks:
-                print(f"  Trace {trace.trace_idx} (stage {trace.stage}): Found {len(peaks)} peaks")
+                peak_positions = [p.position for p in peaks]
+                print(f"  Trace {trace.trace_idx} (stage {trace.stage}): Found {len(peaks)} acceleration peaks at positions: {peak_positions[:5]}{'...' if len(peaks) > 5 else ''}")
 
-        # Sort by confidence (highest first)
-        all_peaks.sort(key=lambda p: p.confidence, reverse=True)
+        # Sort by acceleration value (stored in window_avg)
+        all_peaks.sort(key=lambda p: p.window_avg, reverse=True)
 
-        print(f"Total valid peaks found: {len(all_peaks)}")
+        print(f"Total acceleration peaks found: {len(all_peaks)}")
         if all_peaks:
-            print(f"Top confidence: {all_peaks[0].confidence:.3f}")
-            print(f"Peaks above threshold: {sum(1 for p in all_peaks if p.confidence > self.confidence_threshold)}")
+            print(f"Top acceleration value: {all_peaks[0].window_avg:.6f} (at pos {all_peaks[0].position}, conf={all_peaks[0].confidence:.3f})")
+            print(f"Note: Peaks sorted by ACCELERATION, not absolute confidence")
 
         return all_peaks
 
