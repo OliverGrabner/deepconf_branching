@@ -264,9 +264,12 @@ def process_question_peak_branching(
                 'parent_idx': trace.get('parent_idx'),
                 'branch_point_tokens': trace.get('branch_point_tokens'),
                 'answer': extracted_answer,
+                'extracted_answer': extracted_answer,  # For compatibility
                 'is_correct': is_correct,
                 'tokens_generated': trace.get('tokens_generated', 0),
-                'confidence_peaks': trace.get('confidence_peaks', [])
+                'confidence_peaks': trace.get('confidence_peaks', []),
+                'confs': trace.get('confs', []),  # Add confidence scores for visualization
+                'num_tokens': trace.get('num_tokens', 0)  # Total tokens
             }
             valid_traces.append(trace_info)
 
