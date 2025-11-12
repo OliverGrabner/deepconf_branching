@@ -585,7 +585,7 @@ def main():
                        help='[Peak Branching] Size of exclusion zone around used peaks')
 
     # Sampling parameters
-    parser.add_argument('--temperature', type=float, default=0.8,
+    parser.add_argument('--temperature', type=float, default=0.6,
                        help='Sampling temperature')
     parser.add_argument('--top_p', type=float, default=1.0,
                        help='Top-p sampling parameter')

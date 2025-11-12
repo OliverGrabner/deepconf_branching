@@ -1,303 +1,297 @@
 """
-Compare Branching SC vs Traditional SC Performance
+Compare Traditional SC vs Branching SC vs Peak Branching SC
 
-Creates 3-panel bar graph comparing:
-1. Majority vote accuracy
-2. Individual trace accuracy (aggregated correct answer choice)
-3. Tokens generated
+Creates three visualizations:
+1. Total New Tokens Generated comparison
+2. Overall Accuracy comparison
+3. Individual Trace Accuracy comparison
 
 Usage:
-    python scripts/compare_experiments.py
+    python scripts/compare_experiments.py \
+        --traditional results/traditional_*.json \
+        --branching results/branching_*.json \
+        --peak_branching results/peak_branching_*.json \
+        --output_dir comparisons/
 """
 
 import os
 import sys
 import json
-import matplotlib.pyplot as plt
+import argparse
 import numpy as np
+import matplotlib.pyplot as plt
+from typing import Dict, List, Any, Optional
+from collections import defaultdict
 
-# Add parent directory to path
+# Add parent directory
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
-def load_results(filepath):
-    """Load experiment results from JSON"""
+def load_results(filepath: str) -> Dict[str, Any]:
+    """Load results from JSON file"""
     with open(filepath, 'r') as f:
         return json.load(f)
 
 
-def compute_metrics(data, experiment_type):
+def extract_metrics(results: Dict[str, Any], experiment_type: str) -> Dict[str, List[float]]:
     """
-    Compute metrics from experiment data
+    Extract metrics from results for each experiment type
 
     Returns:
-        dict with keys:
-            - majority_vote_accuracy: % of questions where voted answer is correct
-            - individual_trace_accuracy: % of all traces that are individually correct
-            - total_tokens_generated: total tokens generated across all questions
+        Dictionary with metrics:
+        - total_tokens_new: Total NEW tokens generated per question
+        - overall_accuracy: Overall accuracy (voted answer correct)
+        - individual_accuracy: Individual trace accuracy
     """
-    # Check if this is a stats summary file (has 'overall' key) or detailed results file (has 'results' key)
-    if 'overall' in data:
-        # Stats summary format
-        overall = data.get('overall', {})
-        by_dataset = data.get('by_dataset', {})
+    metrics = {
+        'total_tokens_new': [],
+        'overall_accuracy': [],
+        'individual_accuracy': [],
+        'question_indices': []
+    }
 
-        # Extract metrics directly from summary
-        majority_vote_acc = overall.get('accuracy', 0) * 100  # Convert to percentage
+    # Navigate through results structure
+    for dataset_name, dataset_results in results.items():
+        if dataset_name == 'metadata':
+            continue
 
-        # For individual trace accuracy, aggregate from by_dataset
-        total_individual_acc = 0
-        dataset_count = 0
-        for dataset_name, dataset_stats in by_dataset.items():
-            total_individual_acc += dataset_stats.get('avg_individual_trace_accuracy', 0)
-            dataset_count += 1
+        for question_result in dataset_results:
+            # Question accuracy (voted answer)
+            is_correct = question_result.get('is_correct', False)
+            metrics['overall_accuracy'].append(1.0 if is_correct else 0.0)
 
-        individual_trace_acc = (total_individual_acc / dataset_count * 100) if dataset_count > 0 else 0
+            # Individual trace accuracy
+            individual_acc = question_result.get('individual_trace_accuracy', 0.0)
+            metrics['individual_accuracy'].append(individual_acc)
 
-        # Get total tokens - use total_tokens for stats summary
-        total_tokens = overall.get('total_tokens', 0)
-        total_questions = overall.get('num_questions', 0)
+            # Total NEW tokens generated (varies by experiment type)
+            stats = question_result.get('statistics', {})
 
-        # Estimate total traces (not directly in summary, compute from avg)
-        total_traces = 0
-        for dataset_name, dataset_stats in by_dataset.items():
-            total_traces += dataset_stats.get('num_questions', 0) * 32  # Approximate
+            if experiment_type == 'traditional':
+                # Traditional: all tokens are new tokens
+                total_tokens = stats.get('total_tokens', 0)
+                metrics['total_tokens_new'].append(total_tokens)
 
-        return {
-            'majority_vote_accuracy': majority_vote_acc,
-            'individual_trace_accuracy': individual_trace_acc,
-            'total_tokens_generated': total_tokens,
-            'total_questions': total_questions,
-            'total_traces': total_traces
-        }
+            elif experiment_type == 'branching':
+                # Branching: use total_tokens_generated (only NEW tokens)
+                total_tokens_generated = stats.get('total_tokens_generated', 0)
+                metrics['total_tokens_new'].append(total_tokens_generated)
 
-    else:
-        # Detailed results format
-        results = data.get('results', {})
+            elif experiment_type == 'peak_branching':
+                # Peak branching: use total_tokens_generated (only NEW tokens)
+                # Note: peak_branching_stats has the breakdown
+                peak_stats = question_result.get('peak_branching_stats', {})
+                total_tokens_generated = peak_stats.get('total_tokens_generated', 0)
+                # Fallback to statistics if not in peak_stats
+                if total_tokens_generated == 0:
+                    total_tokens_generated = stats.get('total_tokens', 0)
+                metrics['total_tokens_new'].append(total_tokens_generated)
 
-        majority_correct = 0
-        total_questions = 0
-        individual_correct = 0
-        total_traces = 0
-        total_tokens = 0
-
-        for dataset_name, questions in results.items():
-            for question_result in questions:
-                total_questions += 1
-
-                # Majority vote accuracy
-                if question_result.get('is_correct', False):
-                    majority_correct += 1
-
-                # Individual trace accuracy
-                individual_acc = question_result.get('individual_trace_accuracy', 0)
-                num_traces = question_result.get('num_valid_traces', 0)
-                individual_correct += individual_acc * num_traces
-                total_traces += num_traces
-
-                # Tokens generated
-                stats = question_result.get('statistics', {})
-                if experiment_type == 'branching':
-                    # Use total_tokens_generated (excludes inherited tokens)
-                    total_tokens += stats.get('total_tokens_generated', stats.get('total_tokens', 0))
-                else:
-                    # Traditional SC: total_tokens is correct
-                    total_tokens += stats.get('total_tokens', 0)
-
-        majority_vote_acc = (majority_correct / total_questions * 100) if total_questions > 0 else 0
-        individual_trace_acc = (individual_correct / total_traces * 100) if total_traces > 0 else 0
-
-        return {
-            'majority_vote_accuracy': majority_vote_acc,
-            'individual_trace_accuracy': individual_trace_acc,
-            'total_tokens_generated': total_tokens,
-            'total_questions': total_questions,
-            'total_traces': total_traces
-        }
+    return metrics
 
 
-def create_comparison_plot(branching_metrics, traditional_metrics, output_path):
-    """Create 3-panel bar graph comparing the two approaches"""
+def create_comparison_plots(
+    traditional_metrics: Dict[str, List[float]],
+    branching_metrics: Dict[str, List[float]],
+    peak_branching_metrics: Dict[str, List[float]],
+    output_dir: str
+):
+    """Create three comparison visualizations"""
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-    fig.suptitle('Branching SC vs Traditional SC Comparison', fontsize=16, fontweight='bold')
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Colors
-    colors = ['#2E86AB', '#A23B72']  # Blue for branching, Purple for traditional
+    # Plot 1: Total New Tokens Generated
+    fig, ax = plt.subplots(figsize=(12, 7))
 
-    # Panel 1: Majority Vote Accuracy
-    ax1 = axes[0]
-    majority_accs = [
-        branching_metrics['majority_vote_accuracy'],
-        traditional_metrics['majority_vote_accuracy']
-    ]
-    bars1 = ax1.bar(['Branching SC', 'Traditional SC'], majority_accs, color=colors, alpha=0.8, edgecolor='black', linewidth=1.5)
+    # Calculate averages
+    traditional_avg = np.mean(traditional_metrics['total_tokens_new']) if traditional_metrics['total_tokens_new'] else 0
+    branching_avg = np.mean(branching_metrics['total_tokens_new']) if branching_metrics['total_tokens_new'] else 0
+    peak_branching_avg = np.mean(peak_branching_metrics['total_tokens_new']) if peak_branching_metrics['total_tokens_new'] else 0
 
-    ax1.set_ylabel('Accuracy (%)', fontsize=12, fontweight='bold')
-    ax1.set_title('Majority Vote Accuracy', fontsize=14, fontweight='bold')
-    ax1.set_ylim([0, 100])
-    ax1.grid(axis='y', alpha=0.3, linestyle='--')
+    methods = ['Traditional SC', 'Branching SC', 'Peak Branching SC']
+    averages = [traditional_avg, branching_avg, peak_branching_avg]
+    colors = ['#3498db', '#e74c3c', '#2ecc71']
+
+    bars = ax.bar(methods, averages, color=colors, alpha=0.7, edgecolor='black', linewidth=2)
 
     # Add value labels on bars
-    for bar, val in zip(bars1, majority_accs):
+    for bar, avg in zip(bars, averages):
         height = bar.get_height()
-        ax1.text(bar.get_x() + bar.get_width()/2., height + 1,
-                f'{val:.1f}%', ha='center', va='bottom', fontsize=11, fontweight='bold')
+        ax.text(bar.get_x() + bar.get_width()/2., height,
+                f'{int(avg):,}',
+                ha='center', va='bottom', fontsize=12, fontweight='bold')
 
-    # Panel 2: Individual Trace Accuracy
-    ax2 = axes[1]
-    individual_accs = [
-        branching_metrics['individual_trace_accuracy'],
-        traditional_metrics['individual_trace_accuracy']
-    ]
-    bars2 = ax2.bar(['Branching SC', 'Traditional SC'], individual_accs, color=colors, alpha=0.8, edgecolor='black', linewidth=1.5)
+    # Add savings percentage
+    if traditional_avg > 0:
+        branching_savings = ((traditional_avg - branching_avg) / traditional_avg) * 100
+        peak_savings = ((traditional_avg - peak_branching_avg) / traditional_avg) * 100
 
-    ax2.set_ylabel('Accuracy (%)', fontsize=12, fontweight='bold')
-    ax2.set_title('Individual Trace Accuracy\n(Aggregated Correct Answer Choice)', fontsize=14, fontweight='bold')
-    ax2.set_ylim([0, 100])
-    ax2.grid(axis='y', alpha=0.3, linestyle='--')
+        ax.text(1, branching_avg * 0.5, f'↓ {branching_savings:.1f}%\nsavings',
+                ha='center', va='center', fontsize=11, fontweight='bold', color='white',
+                bbox=dict(boxstyle='round', facecolor='black', alpha=0.7))
 
-    # Add value labels on bars
-    for bar, val in zip(bars2, individual_accs):
-        height = bar.get_height()
-        ax2.text(bar.get_x() + bar.get_width()/2., height + 1,
-                f'{val:.1f}%', ha='center', va='bottom', fontsize=11, fontweight='bold')
+        ax.text(2, peak_branching_avg * 0.5, f'↓ {peak_savings:.1f}%\nsavings',
+                ha='center', va='center', fontsize=11, fontweight='bold', color='white',
+                bbox=dict(boxstyle='round', facecolor='black', alpha=0.7))
 
-    # Panel 3: Tokens Generated
-    ax3 = axes[2]
-    tokens = [
-        branching_metrics['total_tokens_generated'],
-        traditional_metrics['total_tokens_generated']
-    ]
-    bars3 = ax3.bar(['Branching SC', 'Traditional SC'], tokens, color=colors, alpha=0.8, edgecolor='black', linewidth=1.5)
+    ax.set_ylabel('Average Total NEW Tokens Generated', fontsize=13, fontweight='bold')
+    ax.set_title('Token Efficiency Comparison\n(Lower is Better)', fontsize=15, fontweight='bold', pad=20)
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.set_ylim(0, max(averages) * 1.2)
 
-    ax3.set_ylabel('Total Tokens Generated', fontsize=12, fontweight='bold')
-    ax3.set_title('Tokens Generated', fontsize=14, fontweight='bold')
-    ax3.grid(axis='y', alpha=0.3, linestyle='--')
-
-    # Format y-axis with commas
-    ax3.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{int(x):,}'))
-
-    # Add value labels on bars
-    for bar, val in zip(bars3, tokens):
-        height = bar.get_height()
-        ax3.text(bar.get_x() + bar.get_width()/2., height,
-                f'{int(val):,}', ha='center', va='bottom', fontsize=11, fontweight='bold')
-
-    # Add summary statistics as text box
-    avg_tok_branch = branching_metrics['total_tokens_generated']/branching_metrics['total_questions'] if branching_metrics['total_questions'] > 0 else 0
-    avg_tok_trad = traditional_metrics['total_tokens_generated']/traditional_metrics['total_questions'] if traditional_metrics['total_questions'] > 0 else 0
-
-    stats_text = (
-        f"Branching SC:\n"
-        f"  Questions: {branching_metrics['total_questions']}\n"
-        f"  Total Traces: {branching_metrics['total_traces']}\n"
-        f"  Tokens/Question: {avg_tok_branch:.0f}\n\n"
-        f"Traditional SC:\n"
-        f"  Questions: {traditional_metrics['total_questions']}\n"
-        f"  Total Traces: {traditional_metrics['total_traces']}\n"
-        f"  Tokens/Question: {avg_tok_trad:.0f}"
-    )
-
-    fig.text(0.99, 0.02, stats_text, fontsize=9, family='monospace',
-             verticalalignment='bottom', horizontalalignment='right',
-             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
-
-    plt.tight_layout(rect=[0, 0.05, 1, 0.96])
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    print(f"\nComparison plot saved to: {output_path}")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'comparison_tokens.png'), dpi=150, bbox_inches='tight')
     plt.close()
+    print(f"✓ Saved: {output_dir}/comparison_tokens.png")
 
+    # Plot 2: Overall Accuracy (Voted Answer)
+    fig, ax = plt.subplots(figsize=(12, 7))
 
-def print_summary(branching_metrics, traditional_metrics):
-    """Print summary statistics"""
-    print("\n" + "="*80)
-    print("EXPERIMENT COMPARISON SUMMARY")
-    print("="*80)
+    traditional_acc = np.mean(traditional_metrics['overall_accuracy']) if traditional_metrics['overall_accuracy'] else 0
+    branching_acc = np.mean(branching_metrics['overall_accuracy']) if branching_metrics['overall_accuracy'] else 0
+    peak_branching_acc = np.mean(peak_branching_metrics['overall_accuracy']) if peak_branching_metrics['overall_accuracy'] else 0
 
-    print("\nBRANCHING SC:")
-    print(f"  Majority Vote Accuracy:      {branching_metrics['majority_vote_accuracy']:.2f}%")
-    print(f"  Individual Trace Accuracy:   {branching_metrics['individual_trace_accuracy']:.2f}%")
-    print(f"  Total Tokens Generated:      {branching_metrics['total_tokens_generated']:,}")
-    print(f"  Total Questions:             {branching_metrics['total_questions']}")
-    print(f"  Total Traces:                {branching_metrics['total_traces']}")
-    avg_tok_branch = branching_metrics['total_tokens_generated']/branching_metrics['total_questions'] if branching_metrics['total_questions'] > 0 else 0
-    print(f"  Avg Tokens/Question:         {avg_tok_branch:.0f}")
+    accuracies = [traditional_acc * 100, branching_acc * 100, peak_branching_acc * 100]
 
-    print("\nTRADITIONAL SC:")
-    print(f"  Majority Vote Accuracy:      {traditional_metrics['majority_vote_accuracy']:.2f}%")
-    print(f"  Individual Trace Accuracy:   {traditional_metrics['individual_trace_accuracy']:.2f}%")
-    print(f"  Total Tokens Generated:      {traditional_metrics['total_tokens_generated']:,}")
-    print(f"  Total Questions:             {traditional_metrics['total_questions']}")
-    print(f"  Total Traces:                {traditional_metrics['total_traces']}")
-    avg_tok_trad = traditional_metrics['total_tokens_generated']/traditional_metrics['total_questions'] if traditional_metrics['total_questions'] > 0 else 0
-    print(f"  Avg Tokens/Question:         {avg_tok_trad:.0f}")
+    bars = ax.bar(methods, accuracies, color=colors, alpha=0.7, edgecolor='black', linewidth=2)
 
-    print("\nCOMPARISON:")
-    maj_diff = branching_metrics['majority_vote_accuracy'] - traditional_metrics['majority_vote_accuracy']
-    ind_diff = branching_metrics['individual_trace_accuracy'] - traditional_metrics['individual_trace_accuracy']
-    tok_diff = branching_metrics['total_tokens_generated'] - traditional_metrics['total_tokens_generated']
-    tok_pct = (tok_diff / traditional_metrics['total_tokens_generated'] * 100) if traditional_metrics['total_tokens_generated'] > 0 else 0
+    # Add value labels
+    for bar, acc in zip(bars, accuracies):
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2., height,
+                f'{acc:.1f}%',
+                ha='center', va='bottom', fontsize=12, fontweight='bold')
 
-    print(f"  Majority Vote Accuracy Δ:    {maj_diff:+.2f}%")
-    print(f"  Individual Trace Accuracy Δ: {ind_diff:+.2f}%")
-    print(f"  Tokens Generated Δ:          {tok_diff:+,} ({tok_pct:+.1f}%)")
+    # Add improvement markers
+    if traditional_acc > 0:
+        branching_improvement = ((branching_acc - traditional_acc) / traditional_acc) * 100
+        peak_improvement = ((peak_branching_acc - traditional_acc) / traditional_acc) * 100
 
-    print("\n" + "="*80)
+        if branching_improvement > 0:
+            ax.text(1, branching_acc * 100 * 0.5, f'↑ +{branching_improvement:.1f}%',
+                    ha='center', va='center', fontsize=11, fontweight='bold', color='white',
+                    bbox=dict(boxstyle='round', facecolor='green', alpha=0.8))
+
+        if peak_improvement > 0:
+            ax.text(2, peak_branching_acc * 100 * 0.5, f'↑ +{peak_improvement:.1f}%',
+                    ha='center', va='center', fontsize=11, fontweight='bold', color='white',
+                    bbox=dict(boxstyle='round', facecolor='green', alpha=0.8))
+
+    ax.set_ylabel('Overall Accuracy (%)', fontsize=13, fontweight='bold')
+    ax.set_title('Overall Accuracy Comparison\n(Voted Answer Correctness)', fontsize=15, fontweight='bold', pad=20)
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.set_ylim(0, 105)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'comparison_overall_accuracy.png'), dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"✓ Saved: {output_dir}/comparison_overall_accuracy.png")
+
+    # Plot 3: Individual Trace Accuracy
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    traditional_ind = np.mean(traditional_metrics['individual_accuracy']) if traditional_metrics['individual_accuracy'] else 0
+    branching_ind = np.mean(branching_metrics['individual_accuracy']) if branching_metrics['individual_accuracy'] else 0
+    peak_branching_ind = np.mean(peak_branching_metrics['individual_accuracy']) if peak_branching_metrics['individual_accuracy'] else 0
+
+    individual_accs = [traditional_ind * 100, branching_ind * 100, peak_branching_ind * 100]
+
+    bars = ax.bar(methods, individual_accs, color=colors, alpha=0.7, edgecolor='black', linewidth=2)
+
+    # Add value labels
+    for bar, acc in zip(bars, individual_accs):
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2., height,
+                f'{acc:.1f}%',
+                ha='center', va='bottom', fontsize=12, fontweight='bold')
+
+    # Add improvement markers
+    if traditional_ind > 0:
+        branching_ind_improvement = ((branching_ind - traditional_ind) / traditional_ind) * 100
+        peak_ind_improvement = ((peak_branching_ind - traditional_ind) / traditional_ind) * 100
+
+        if branching_ind_improvement > 0:
+            ax.text(1, branching_ind * 100 * 0.5, f'↑ +{branching_ind_improvement:.1f}%',
+                    ha='center', va='center', fontsize=11, fontweight='bold', color='white',
+                    bbox=dict(boxstyle='round', facecolor='green', alpha=0.8))
+
+        if peak_ind_improvement > 0:
+            ax.text(2, peak_branching_ind * 100 * 0.5, f'↑ +{peak_ind_improvement:.1f}%',
+                    ha='center', va='center', fontsize=11, fontweight='bold', color='white',
+                    bbox=dict(boxstyle='round', facecolor='green', alpha=0.8))
+
+    ax.set_ylabel('Individual Trace Accuracy (%)', fontsize=13, fontweight='bold')
+    ax.set_title('Individual Trace Accuracy Comparison\n(Percentage of Correct Individual Traces)', fontsize=15, fontweight='bold', pad=20)
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.set_ylim(0, 105)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'comparison_individual_accuracy.png'), dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"✓ Saved: {output_dir}/comparison_individual_accuracy.png")
+
+    # Print summary
+    print("\n" + "="*70)
+    print("COMPARISON SUMMARY")
+    print("="*70)
+    print(f"\n{'Metric':<40} {'Traditional':<15} {'Branching':<15} {'Peak Branch':<15}")
+    print("-"*70)
+    print(f"{'Avg NEW Tokens Generated':<40} {traditional_avg:<15,.0f} {branching_avg:<15,.0f} {peak_branching_avg:<15,.0f}")
+    print(f"{'Overall Accuracy':<40} {traditional_acc*100:<15.1f}% {branching_acc*100:<15.1f}% {peak_branching_acc*100:<15.1f}%")
+    print(f"{'Individual Trace Accuracy':<40} {traditional_ind*100:<15.1f}% {branching_ind*100:<15.1f}% {peak_branching_ind*100:<15.1f}%")
+    print("-"*70)
+
+    if traditional_avg > 0:
+        print(f"\nToken Savings vs Traditional:")
+        print(f"  Branching SC: {((traditional_avg - branching_avg) / traditional_avg) * 100:.1f}%")
+        print(f"  Peak Branching SC: {((traditional_avg - peak_branching_avg) / traditional_avg) * 100:.1f}%")
+
+    print("\n" + "="*70)
 
 
 def main():
-    # Hardcoded file paths - prefer detailed versions for accurate token counts
-    branching_file = "outputs/branching_sc_detailed_20251105_163947.json"
-    traditional_file = "outputs/traditional_sc_detailed_20251105_143014.json"
+    parser = argparse.ArgumentParser(description='Compare Traditional, Branching, and Peak Branching SC')
+    parser.add_argument('--traditional', type=str, required=True,
+                       help='Path to traditional SC results JSON')
+    parser.add_argument('--branching', type=str, required=True,
+                       help='Path to branching SC results JSON')
+    parser.add_argument('--peak_branching', type=str, required=True,
+                       help='Path to peak branching SC results JSON')
+    parser.add_argument('--output_dir', type=str, default='comparisons',
+                       help='Output directory for comparison plots')
 
-    # Fallback: try stats versions if detailed not found
-    if not os.path.exists(branching_file):
-        branching_file = "outputs/branching_sc_stats_20251105_163947.json"
-    if not os.path.exists(traditional_file):
-        traditional_file = "outputs/traditional_sc_stats_20251105_143014.json"
+    args = parser.parse_args()
 
-    print("="*80)
-    print("LOADING EXPERIMENT RESULTS")
-    print("="*80)
+    print("Loading results...")
+    print(f"  Traditional: {args.traditional}")
+    print(f"  Branching: {args.branching}")
+    print(f"  Peak Branching: {args.peak_branching}")
 
-    # Load data
-    print(f"\nLoading branching SC results from: {branching_file}")
-    if not os.path.exists(branching_file):
-        print(f"ERROR: File not found: {branching_file}")
-        print("Please ensure the file exists in the outputs/ directory")
-        sys.exit(1)
+    # Load results
+    traditional_results = load_results(args.traditional)
+    branching_results = load_results(args.branching)
+    peak_branching_results = load_results(args.peak_branching)
 
-    branching_data = load_results(branching_file)
-    print(f"✓ Loaded branching SC results")
+    # Extract metrics
+    print("\nExtracting metrics...")
+    traditional_metrics = extract_metrics(traditional_results, 'traditional')
+    branching_metrics = extract_metrics(branching_results, 'branching')
+    peak_branching_metrics = extract_metrics(peak_branching_results, 'peak_branching')
 
-    print(f"\nLoading traditional SC results from: {traditional_file}")
-    if not os.path.exists(traditional_file):
-        print(f"ERROR: File not found: {traditional_file}")
-        print("Please ensure the file exists in the outputs/ directory")
-        sys.exit(1)
+    print(f"  Traditional: {len(traditional_metrics['total_tokens_new'])} questions")
+    print(f"  Branching: {len(branching_metrics['total_tokens_new'])} questions")
+    print(f"  Peak Branching: {len(peak_branching_metrics['total_tokens_new'])} questions")
 
-    traditional_data = load_results(traditional_file)
-    print(f"✓ Loaded traditional SC results")
+    # Create comparison plots
+    print("\nGenerating comparison visualizations...")
+    create_comparison_plots(
+        traditional_metrics,
+        branching_metrics,
+        peak_branching_metrics,
+        args.output_dir
+    )
 
-    # Compute metrics
-    print("\nComputing metrics...")
-    branching_metrics = compute_metrics(branching_data, 'branching')
-    traditional_metrics = compute_metrics(traditional_data, 'traditional')
-    print("✓ Metrics computed")
-
-    # Print summary
-    print_summary(branching_metrics, traditional_metrics)
-
-    # Create comparison plot
-    print("\nGenerating comparison plot...")
-    output_path = "outputs/comparison_branching_vs_traditional.png"
-    os.makedirs("outputs", exist_ok=True)
-    create_comparison_plot(branching_metrics, traditional_metrics, output_path)
-
-    print("\n" + "="*80)
-    print("COMPARISON COMPLETE")
-    print("="*80)
+    print("\n✓ Comparison complete!")
 
 
 if __name__ == "__main__":
