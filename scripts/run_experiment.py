@@ -119,8 +119,10 @@ def process_question_traditional(
 
             valid_traces.append({
                 'answer': extracted_answer,
+                'extracted_answer': extracted_answer,  # For compatibility
                 'is_correct': is_correct,
-                'num_tokens': trace.get('num_tokens', 0)
+                'num_tokens': trace.get('num_tokens', 0),
+                'confs': trace.get('confs', [])  # Add confidence scores for visualization
             })
 
     # Perform majority voting

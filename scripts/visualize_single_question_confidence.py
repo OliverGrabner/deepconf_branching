@@ -96,15 +96,31 @@ def visualize_question_confidence(
     print(f"Question {question_id}:")
     print(f"  Ground truth: {ground_truth}")
     print(f"  Number of traces: {len(traces)}")
-    
+
+    # Debug: Check first trace structure
+    if traces:
+        print(f"\nDebug - First trace keys: {traces[0].keys()}")
+        confs_sample = traces[0].get('confs', [])
+        print(f"Debug - confs type: {type(confs_sample)}")
+        print(f"Debug - confs length: {len(confs_sample) if isinstance(confs_sample, list) else 'N/A'}")
+        if isinstance(confs_sample, list) and len(confs_sample) > 0:
+            print(f"Debug - First 5 confs: {confs_sample[:5]}")
+            print(f"Debug - Confs range: [{min(confs_sample):.4f}, {max(confs_sample):.4f}]")
+
     # Create figure
     fig, ax = plt.subplots(figsize=(16, 10))
-    
+
     # Plot each trace
+    traces_plotted = 0
     for trace in traces:
         confs = trace.get('confs', [])
         if not confs:
             continue
+
+        if not isinstance(confs, list) or len(confs) == 0:
+            continue
+
+        traces_plotted += 1
         
         # Determine correctness
         answer = trace.get('extracted_answer') or trace.get('answer')
