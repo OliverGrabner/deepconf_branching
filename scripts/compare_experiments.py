@@ -9,14 +9,18 @@ Creates visualizations comparing:
 5. Chain of Thought Length comparison (new)
 
 Usage:
-    # Auto-select most recent files:
+    # Auto-select most recent files (all questions):
     python scripts/compare_experiments.py --output_dir comparisons/
+
+    # Auto-select and compare only first 50 questions:
+    python scripts/compare_experiments.py --max_questions 50 --output_dir comparisons/
 
     # Or specify files manually:
     python scripts/compare_experiments.py \
         --traditional results/traditional_*.json \
         --branching results/branching_*.json \
         --peak_branching results/peak_branching_*.json \
+        --max_questions 50 \
         --output_dir comparisons/
 """
 
@@ -90,9 +94,14 @@ def normalize_accuracy(value: float) -> float:
     return value
 
 
-def extract_metrics(results: Dict[str, Any], experiment_type: str) -> Dict[str, List[float]]:
+def extract_metrics(results: Dict[str, Any], experiment_type: str, max_questions: Optional[int] = None) -> Dict[str, List[float]]:
     """
     Extract metrics from results for each experiment type
+
+    Args:
+        results: Results dictionary from JSON file
+        experiment_type: Type of experiment (traditional, branching, peak_branching)
+        max_questions: Maximum number of questions to include (None = all questions)
 
     Returns:
         Dictionary with metrics including new metrics for branching analysis
@@ -118,7 +127,10 @@ def extract_metrics(results: Dict[str, Any], experiment_type: str) -> Dict[str, 
             if not isinstance(dataset_results, list):
                 continue
 
-            for question_result in dataset_results:
+            # Limit to first max_questions if specified
+            questions_to_process = dataset_results[:max_questions] if max_questions else dataset_results
+
+            for question_result in questions_to_process:
                 # Question accuracy (voted answer)
                 is_correct = question_result.get('is_correct', False)
                 metrics['overall_accuracy'].append(1.0 if is_correct else 0.0)
@@ -603,6 +615,8 @@ def main():
                        help='Output directory for comparison plots')
     parser.add_argument('--base_dir', type=str, default='outputs',
                        help='Base directory to search for result files when auto-selecting')
+    parser.add_argument('--max_questions', type=int, default=None,
+                       help='Maximum number of questions to compare (default: all questions)')
 
     args = parser.parse_args()
 
@@ -646,9 +660,11 @@ def main():
 
     # Extract metrics
     print("\nExtracting metrics...")
-    traditional_metrics = extract_metrics(traditional_results, 'traditional')
-    branching_metrics = extract_metrics(branching_results, 'branching')
-    peak_branching_metrics = extract_metrics(peak_branching_results, 'peak_branching')
+    if args.max_questions:
+        print(f"  Limiting comparison to first {args.max_questions} questions")
+    traditional_metrics = extract_metrics(traditional_results, 'traditional', args.max_questions)
+    branching_metrics = extract_metrics(branching_results, 'branching', args.max_questions)
+    peak_branching_metrics = extract_metrics(peak_branching_results, 'peak_branching', args.max_questions)
 
     print(f"  Traditional: {len(traditional_metrics['total_tokens_new'])} questions")
     print(f"  Branching: {len(branching_metrics['total_tokens_new'])} questions")
