@@ -65,6 +65,64 @@ def extract_answer_gsm8k(text: str) -> Optional[str]:
     return None
 
 
+def normalize_answer(answer: str) -> str:
+    """
+    Normalize an answer for consistent comparison and voting.
+
+    Handles common variations like:
+    - "1" vs "1." vs "1.0" vs "1.00" -> all become "1"
+    - "18" vs "18." vs "18.0" vs "18.00" -> all become "18"
+    - "-5" vs "-5." vs "-5.0" -> all become "-5"
+    - "0.5" vs ".5" -> both become "0.5"
+    - Removes trailing periods and spaces
+    - Handles very long repeated digits (from runaway generation)
+
+    Args:
+        answer: Raw answer string
+
+    Returns:
+        Normalized answer string
+    """
+    if answer is None or answer == '':
+        return ''
+
+    # Convert to string if not already
+    answer = str(answer).strip()
+
+    # Handle extremely long repeated digit strings (from runaway generation)
+    # e.g., "3333333333333..." -> "Invalid"
+    if len(answer) > 50 and all(c == answer[0] for c in answer if c.isdigit()):
+        return 'Invalid'
+
+    # Remove trailing periods that aren't part of decimals
+    if answer.endswith('.'):
+        answer = answer[:-1]
+
+    # Remove commas from numbers
+    answer = answer.replace(',', '')
+
+    # Try to parse as a number
+    try:
+        # Parse as float
+        num = float(answer)
+
+        # Check for invalid values
+        if not np.isfinite(num):
+            return 'Invalid'
+
+        # If it's a whole number, return as integer string
+        if num == int(num):
+            return str(int(num))
+        else:
+            # Otherwise return as simplified decimal
+            # This removes trailing zeros: 1.50 -> 1.5
+            formatted = f"{num:.10f}".rstrip('0').rstrip('.')
+            return formatted
+    except (ValueError, TypeError, OverflowError):
+        # Not a number, just return cleaned string
+        return answer.strip()
+
+
 def quick_parse(text: str) -> str:
     """Parse LaTeX text content"""
     if '\\text{' in text and '}' in text:
@@ -151,28 +209,39 @@ def compute_least_grouped(confs: List[float], group_size: int) -> List[float]:
 # ============= VOTING FUNCTIONS =============
 
 def simple_majority_vote(answers: List[str]) -> Optional[str]:
-    """Simple majority voting"""
+    """Simple majority voting with answer normalization"""
     if not answers:
         return None
-    
-    vote_counts = Counter(answers)
+
+    # Normalize answers before counting
+    normalized_answers = [normalize_answer(ans) for ans in answers]
+
+    # Filter out invalid answers
+    valid_answers = [ans for ans in normalized_answers if ans != 'Invalid']
+    if not valid_answers:
+        return None
+
+    vote_counts = Counter(valid_answers)
     return vote_counts.most_common(1)[0][0]
 
 
 def weighted_majority_vote(answers: List[str], weights: List[float]) -> Optional[str]:
-    """Perform weighted majority voting"""
+    """Perform weighted majority voting with answer normalization"""
     if not answers:
         return None
-    
+
     answer_weights = {}
     for answer, weight in zip(answers, weights):
         if answer is not None:
-            answer_str = str(answer)
-            answer_weights[answer_str] = answer_weights.get(answer_str, 0.0) + float(weight)
-    
+            # Normalize the answer
+            normalized = normalize_answer(str(answer))
+            # Skip invalid answers
+            if normalized != 'Invalid':
+                answer_weights[normalized] = answer_weights.get(normalized, 0.0) + float(weight)
+
     if not answer_weights:
         return None
-    
+
     return max(answer_weights.keys(), key=lambda x: answer_weights[x])
 
 

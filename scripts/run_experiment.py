@@ -39,7 +39,7 @@ import torch
 from vllm import SamplingParams
 
 from deepconf import DeepThinkLLM, prepare_prompt, equal_func
-from deepconf.utils import extract_answer_gsm8k, equal_func_gsm8k
+from deepconf.utils import extract_answer_gsm8k, equal_func_gsm8k, normalize_answer
 from experiment_utils import (
     load_dataset_by_name,
     get_question_and_ground_truth,
@@ -125,11 +125,21 @@ def process_question_traditional(
                 'confs': trace.get('confs', [])  # Add confidence scores for visualization
             })
 
-    # Perform majority voting
+    # Perform majority voting with normalized answers
     if all_answers:
-        vote_counts = Counter(all_answers)
-        voted_answer = vote_counts.most_common(1)[0][0]
-        vote_distribution = dict(vote_counts)
+        # Normalize answers to handle variations like "18" vs "18." vs "18.0"
+        normalized_answers = [normalize_answer(str(ans)) for ans in all_answers]
+        # Filter out invalid answers (e.g., extremely long repeated digits)
+        valid_answers = [ans for ans in normalized_answers if ans != 'Invalid']
+
+        if valid_answers:
+            vote_counts = Counter(valid_answers)
+            voted_answer = vote_counts.most_common(1)[0][0]
+            # Create distribution with original answer format for display
+            vote_distribution = dict(vote_counts)
+        else:
+            voted_answer = None
+            vote_distribution = {}
     else:
         voted_answer = None
         vote_distribution = {}
@@ -290,11 +300,14 @@ def process_question_peak_branching(
             weight = 1.0 if trace_info['stage'] == 0 else 1.1
             weights.append(weight)
 
-        # Calculate weighted vote
+        # Calculate weighted vote with normalized answers
         from collections import Counter
         weighted_counts = Counter()
         for ans, w in zip(weighted_answers, weights):
-            weighted_counts[ans] += w
+            # Normalize answer before counting
+            normalized = normalize_answer(str(ans))
+            if normalized != 'Invalid':
+                weighted_counts[normalized] += w
 
         voted_answer = weighted_counts.most_common(1)[0][0] if weighted_counts else None
         vote_distribution = dict(weighted_counts)
@@ -337,8 +350,8 @@ def process_question_peak_branching(
         'peak_branching_stats': peak_stats,
         'peak_branching_config': result.peak_branching_config if hasattr(result, 'peak_branching_config') else {},
         'statistics': {
-            'total_tokens': result.total_tokens,  # Changed from total_tokens_generated
-            'total_tokens_generated': result.total_tokens,  # Keep both for compatibility
+            'total_tokens': result.total_tokens,  # Total tokens INCLUDING prefix
+            'total_tokens_generated': peak_stats.get('total_tokens_generated', result.total_tokens),  # NEW tokens only from peak_stats
             'avg_tokens_per_trace': result.avg_tokens_per_trace,
             'generation_time': result.generation_time,
             'processing_time': result.processing_time,
@@ -467,11 +480,19 @@ def process_question_branching(
                 'generation_started_at_tokens': trace.get('generation_started_at_tokens', 0)
             })
 
-    # Get voted answer
+    # Get voted answer with normalization
     if all_answers:
-        vote_counts = Counter(all_answers)
-        voted_answer = vote_counts.most_common(1)[0][0]
-        vote_distribution = dict(vote_counts)
+        # Normalize answers before voting
+        normalized_answers = [normalize_answer(str(ans)) for ans in all_answers]
+        valid_answers = [ans for ans in normalized_answers if ans != 'Invalid']
+
+        if valid_answers:
+            vote_counts = Counter(valid_answers)
+            voted_answer = vote_counts.most_common(1)[0][0]
+            vote_distribution = dict(vote_counts)
+        else:
+            voted_answer = None
+            vote_distribution = {}
     else:
         voted_answer = None
         vote_distribution = {}

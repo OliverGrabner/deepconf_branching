@@ -647,7 +647,7 @@ class DeepThinkLLM:
         initial_params = copy.deepcopy(sampling_params)
         initial_params.n = initial_traces
         initial_params.logprobs = 20  # Need logprobs for confidence
-        initial_params.max_tokens = 64000  # Set same limit as branches for consistency
+        initial_params.max_tokens = 8000  # Reasonable limit for initial traces
         initial_params.stop = ["}\n\n", "}\n"]  # Stop after completing \boxed{answer}
 
         print(f"Generating initial traces...")
@@ -733,7 +733,9 @@ class DeepThinkLLM:
                 branch_params = copy.deepcopy(sampling_params)
                 branch_params.n = 1
                 branch_params.logprobs = 20
-                branch_params.max_tokens = max(1000, 64000 - len(branch_info['prompt_tokens']))  # Adjust for prefix length
+                # Cap at 4000 tokens to prevent runaway generation
+                # Use min() not max() - we want the SMALLER of 4000 or remaining budget
+                branch_params.max_tokens = min(4000, 64000 - len(branch_info['prompt_tokens']))
                 branch_params.stop = ["}\n\n", "}\n"]  # Stop after completing \boxed{answer}
 
                 print(f"  Branch max_tokens: {branch_params.max_tokens}")

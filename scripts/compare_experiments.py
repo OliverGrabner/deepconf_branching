@@ -79,6 +79,17 @@ def load_results(filepath: str) -> Dict[str, Any]:
         return json.load(f)
 
 
+def normalize_accuracy(value: float) -> float:
+    """
+    Normalize accuracy value to 0-1 range.
+    Handles both decimal (0-1) and percentage (0-100) formats.
+    """
+    if value > 1.0:
+        # Assume it's already a percentage, convert to decimal
+        return value / 100.0
+    return value
+
+
 def extract_metrics(results: Dict[str, Any], experiment_type: str) -> Dict[str, List[float]]:
     """
     Extract metrics from results for each experiment type
@@ -184,9 +195,30 @@ def extract_metrics(results: Dict[str, Any], experiment_type: str) -> Dict[str, 
                     # Peak branching: use total_tokens_generated (only NEW tokens)
                     peak_stats = question_result.get('peak_branching_stats', {})
                     total_tokens_generated = peak_stats.get('total_tokens_generated', 0)
-                    # Fallback to statistics if not in peak_stats
+
+                    # Debug information
+                    from_peak_stats = total_tokens_generated > 0
+
+                    # IMPORTANT: Do NOT fallback to total_tokens as it includes prefix tokens!
+                    # If peak_branching_stats is missing, try to calculate from valid_traces
+                    if total_tokens_generated == 0 and 'valid_traces' in question_result:
+                        valid_traces = question_result.get('valid_traces', [])
+                        # Sum up tokens_generated from each trace (NEW tokens only)
+                        total_tokens_generated = sum(t.get('tokens_generated', 0) for t in valid_traces)
+
+                        # Debug: Check if tokens_generated field exists
+                        if valid_traces and 'tokens_generated' not in valid_traces[0]:
+                            print(f"WARNING: 'tokens_generated' field missing in valid_traces!")
+                            # Try using num_tokens as fallback (this would be WRONG!)
+                            total_from_num_tokens = sum(t.get('num_tokens', 0) for t in valid_traces)
+                            print(f"  Would get {total_from_num_tokens} tokens using num_tokens (WRONG!)")
+
+                    # If still 0, use statistics but this might be incorrect for older data
                     if total_tokens_generated == 0:
-                        total_tokens_generated = stats.get('total_tokens', 0)
+                        # Warning: This includes prefix tokens and will overestimate!
+                        print(f"WARNING: Using fallback from statistics for question!")
+                        total_tokens_generated = stats.get('total_tokens_generated', stats.get('total_tokens', 0))
+
                     metrics['total_tokens_new'].append(total_tokens_generated)
 
                     # Get initial and branch accuracies directly
@@ -502,6 +534,25 @@ def create_comparison_plots(
     # Token metrics
     print(f"{'Avg NEW Tokens Generated':<45} {traditional_avg:<15,.0f} {branching_avg:<15,.0f} {peak_branching_avg:<15,.0f}")
 
+    # Debug: Show per-question token counts and trace details
+    if len(peak_branching_metrics['total_tokens_new']) <= 10:  # Only show if small dataset
+        print(f"\nDEBUG - Peak Branching token counts per question:")
+        for i, tokens in enumerate(peak_branching_metrics['total_tokens_new']):
+            print(f"  Question {i}: {tokens:,.0f} tokens")
+
+        print(f"\nDEBUG - Comparison of average tokens per method:")
+        print(f"  Traditional (per question): {traditional_avg:.0f}")
+        print(f"  Branching (per question): {branching_avg:.0f}")
+        print(f"  Peak Branching (per question): {peak_branching_avg:.0f}")
+
+        if peak_branching_avg > traditional_avg:
+            print(f"\n⚠️ ALERT: Peak Branching uses MORE tokens than Traditional!")
+            print(f"  This indicates a serious issue with the token counting.")
+            print(f"  Possible causes:")
+            print(f"  1. tokens_generated field is missing/wrong in the data")
+            print(f"  2. Fallback to total_tokens (includes prefix) is being triggered")
+            print(f"  3. Peak branching is actually generating way more traces than expected")
+
     # Accuracy metrics
     print(f"{'Overall Accuracy':<45} {traditional_acc*100:<15.1f}% {branching_acc*100:<15.1f}% {peak_branching_acc*100:<15.1f}%")
     print(f"{'Individual Trace Accuracy (All)':<45} {traditional_ind*100:<15.1f}% {branching_ind*100:<15.1f}% {peak_branching_ind*100:<15.1f}%")
@@ -515,6 +566,16 @@ def create_comparison_plots(
     print(f"{'Avg Branched Trace Length (NEW only)':<45} {'N/A':<15} {branch_lengths[1]:<15,.0f} {branch_lengths[2]:<15,.0f}")
 
     print("-"*80)
+
+    # Additional analysis for peak branching
+    if branch_lengths[2] > branch_lengths[1] and branch_lengths[1] > 0:
+        print(f"\nWARNING: Peak Branching generates longer branches than regular Branching!")
+        print(f"  This suggests peak branching is occurring too early in the traces.")
+        print(f"  Regular branching: {branch_lengths[1]:.0f} tokens per branch")
+        print(f"  Peak branching: {branch_lengths[2]:.0f} tokens per branch")
+        print(f"  Difference: +{branch_lengths[2] - branch_lengths[1]:.0f} tokens")
+        print(f"\n  Hypothesis: Peak detection finds confidence peaks too early,")
+        print(f"  requiring more tokens to complete each branch.")
 
     if traditional_avg > 0:
         print(f"\nToken Savings vs Traditional:")
