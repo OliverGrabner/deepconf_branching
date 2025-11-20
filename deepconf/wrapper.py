@@ -306,14 +306,22 @@ class DeepThinkLLM:
         sampling_params: Optional[SamplingParams]
     ) -> DeepThinkOutput:
         """Offline deep thinking - generate all traces at once"""
-        
 
-        sampling_params.n = budget
-        
+        import copy
+        # Create a copy to avoid modifying the original
+        offline_params = copy.deepcopy(sampling_params)
+        offline_params.n = budget
+
+        # Cap max_tokens at reasonable limit for traditional SC
+        offline_params.max_tokens = min(8000, offline_params.max_tokens)
+        offline_params.stop = ["}\n\n", "}\n"]  # Stop after completing \boxed{answer}
+
         # Generate all traces at once
         print(f"Generating {budget} traces...")
+        print(f"  Max tokens: {offline_params.max_tokens}")
+        print(f"  Stop sequences: {offline_params.stop}")
         generation_start = time.time()
-        vllm_outputs = self.llm.generate([prompt], sampling_params)
+        vllm_outputs = self.llm.generate([prompt], offline_params)
         output.generation_time = time.time() - generation_start
         
         # Process results
@@ -509,7 +517,13 @@ class DeepThinkLLM:
         # Generate until max_tokens for all remaining traces
         final_params = copy.deepcopy(sampling_params)
         final_params.n = 1
-        final_params.max_tokens = sampling_params.max_tokens - manager.stride * n_iterations
+        # Cap final generation at reasonable limit (same as traditional SC)
+        remaining_budget = sampling_params.max_tokens - manager.stride * n_iterations
+        final_params.max_tokens = min(8000, remaining_budget)
+        final_params.stop = ["}\n\n", "}\n"]  # Stop after completing \boxed{answer}
+
+        print(f"  Final generation max_tokens: {final_params.max_tokens}")
+        print(f"  Stop sequences: {final_params.stop}")
 
         # Batch generate for all traces (optimized for parallel processing)
         final_results = self.llm.generate(active_prompts, final_params)
