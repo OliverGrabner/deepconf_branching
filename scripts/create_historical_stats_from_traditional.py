@@ -38,13 +38,9 @@ def extract_token_stats(traditional_results_path: str, output_path: str):
     print(f"Dataset: {dataset_name}")
     print(f"Questions: {len(results)}")
 
-    # Create historical stats structure
-    historical_stats = {
-        'dataset': dataset_name,
-        'source': 'traditional_sc',
-        'num_questions': len(results),
-        'per_question_stats': {}
-    }
+    # Create historical stats structure (format expected by experiment_utils.py)
+    # Must have 'statistics' key with question_idx as keys
+    statistics = {}
 
     # Extract token stats for each question
     for i, question_result in enumerate(results):
@@ -65,7 +61,7 @@ def extract_token_stats(traditional_results_path: str, output_path: str):
             max_tokens = 5000
             min_tokens = 1000
 
-        historical_stats['per_question_stats'][str(i)] = {
+        statistics[str(i)] = {
             'avg_tokens': avg_tokens,
             'median_tokens': median_tokens,
             'max_tokens': max_tokens,
@@ -73,9 +69,17 @@ def extract_token_stats(traditional_results_path: str, output_path: str):
             'num_traces': len(token_counts)
         }
 
-    # Add overall statistics
-    all_avgs = [stats['avg_tokens'] for stats in historical_stats['per_question_stats'].values()]
-    historical_stats['overall'] = {
+    # Create final structure with 'statistics' key that experiment_utils.py expects
+    historical_stats = {
+        'dataset': dataset_name,
+        'source': 'traditional_sc',
+        'num_questions': len(results),
+        'statistics': statistics  # This is the key format expected by load_historical_stats()
+    }
+
+    # Calculate overall statistics for display
+    all_avgs = [stats['avg_tokens'] for stats in statistics.values()]
+    overall = {
         'avg_tokens': int(np.mean(all_avgs)),
         'median_tokens': int(np.median(all_avgs)),
         'max_tokens': int(np.max(all_avgs)),
@@ -91,9 +95,9 @@ def extract_token_stats(traditional_results_path: str, output_path: str):
 
     print(f"\n✓ Historical stats saved to: {output_path}")
     print(f"\nOverall Statistics:")
-    print(f"  Average tokens per question: {historical_stats['overall']['avg_tokens']}")
-    print(f"  Median tokens per question: {historical_stats['overall']['median_tokens']}")
-    print(f"  Range: {historical_stats['overall']['min_tokens']} - {historical_stats['overall']['max_tokens']}")
+    print(f"  Average tokens per question: {overall['avg_tokens']}")
+    print(f"  Median tokens per question: {overall['median_tokens']}")
+    print(f"  Range: {overall['min_tokens']} - {overall['max_tokens']}")
 
     return output_path
 
