@@ -22,14 +22,14 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 import numpy as np
 
-# Add parent directory to path to import local deepconf
+# Add parent directory to path to import scbranch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import torch
 from datasets import load_dataset
 from vllm import SamplingParams
 
-from deepconf import DeepThinkLLM, prepare_prompt, equal_func
+from scbranch import SCLLM, prepare_prompt, equal_func
 
 # Check if matplotlib is available
 try:
@@ -77,7 +77,7 @@ def compute_tail_confidence_evolution(confs: List[float], tail_size: int = 2048,
 
 
 def generate_and_track_traces(
-    deep_llm: DeepThinkLLM,
+    deep_llm: SCLLM,
     question: str,
     ground_truth: str,
     num_traces: int,
@@ -104,8 +104,7 @@ def generate_and_track_traces(
         prompt=prompt,
         mode="offline",
         budget=num_traces,
-        sampling_params=sampling_params,
-        compute_multiple_voting=True
+        sampling_params=sampling_params
     )
 
     print(f"\nProcessing {len(result.all_traces)} traces...")
@@ -149,7 +148,7 @@ def generate_and_track_traces(
         'question': question,
         'ground_truth': ground_truth,
         'traces': traces_data,
-        'voting_results': result.voting_results,
+        'voted_answer': result.voted_answer,
         'final_answer': result.final_answer,
         'num_traces': num_traces,
         'tail_size': tail_size,
@@ -451,7 +450,7 @@ def main():
 
         # Initialize model
         print(f"\nInitializing model...")
-        deep_llm = DeepThinkLLM(
+        deep_llm = SCLLM(
             model=args.model,
             tensor_parallel_size=args.tensor_parallel_size,
             enable_prefix_caching=True,
@@ -492,7 +491,7 @@ def main():
             'question': data['question'],
             'ground_truth': data['ground_truth'],
             'final_answer': data['final_answer'],
-            'voting_results': data['voting_results'],
+            'voted_answer': data['voted_answer'],
             'num_traces': data['num_traces'],
             'traces_summary': [
                 {

@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import torch
 from vllm import SamplingParams
 
-from deepconf import DeepThinkLLM, prepare_prompt
+from scbranch import SCLLM, prepare_prompt
 from experiment_utils import load_dataset_by_name, get_question_and_ground_truth
 
 
@@ -61,7 +61,7 @@ def save_stats(filepath: str, data: Dict[str, Any]):
 
 
 def collect_token_stats_with_timeout(
-    deep_llm: DeepThinkLLM,
+    deep_llm: SCLLM,
     question: str,
     num_samples: int,
     sampling_params: SamplingParams,
@@ -195,8 +195,8 @@ def main():
     datasets = load_dataset_by_name(args.dataset, split="test")
 
     # Initialize model
-    print(f"\nInitializing DeepThinkLLM with {args.model}...")
-    deep_llm = DeepThinkLLM(
+    print(f"\nInitializing SCLLM with {args.model}...")
+    deep_llm = SCLLM(
         model=args.model,
         tensor_parallel_size=args.tensor_parallel_size,
         enable_prefix_caching=True,

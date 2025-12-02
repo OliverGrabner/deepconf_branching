@@ -38,8 +38,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import torch
 from vllm import SamplingParams
 
-from deepconf import DeepThinkLLM, prepare_prompt, equal_func
-from deepconf.utils import extract_answer_gsm8k, equal_func_gsm8k, normalize_answer
+from scbranch import SCLLM, prepare_prompt, equal_func
+from scbranch.utils import extract_answer_gsm8k, equal_func_gsm8k, normalize_answer
 from experiment_utils import (
     load_dataset_by_name,
     get_question_and_ground_truth,
@@ -58,7 +58,7 @@ from experiment_utils import (
 
 
 def process_question_traditional(
-    deep_llm: DeepThinkLLM,
+    deep_llm: SCLLM,
     question: str,
     ground_truth: str,
     num_traces: int,
@@ -89,8 +89,7 @@ def process_question_traditional(
         prompt=prompt,
         mode="offline",
         budget=num_traces,
-        sampling_params=sampling_params,
-        compute_multiple_voting=False
+        sampling_params=sampling_params
     )
 
     # Extract answers from all traces
@@ -188,7 +187,7 @@ def process_question_traditional(
 
 
 def process_question_peak_branching(
-    deep_llm: DeepThinkLLM,
+    deep_llm: SCLLM,
     question: str,
     ground_truth: str,
     initial_traces: int,
@@ -237,8 +236,7 @@ def process_question_peak_branching(
         min_peak_distance=min_peak_distance,
         peak_selection_ratio=peak_selection_ratio,
         exclusion_zone_size=exclusion_zone_size,
-        sampling_params=sampling_params,
-        compute_multiple_voting=False
+        sampling_params=sampling_params
     )
 
     # Extract answers and check correctness
@@ -289,28 +287,19 @@ def process_question_peak_branching(
             else:
                 branch_traces_list.append(trace_info)
 
-    # Perform weighted voting
+    # Perform simple majority voting (same as traditional and branching)
     if all_answers:
-        # Apply weights based on depth
-        weighted_answers = []
-        weights = []
-        for trace_info in valid_traces:
-            weighted_answers.append(trace_info['answer'])
-            # Weight: 1.0 for initial (stage 0), 1.1 for ALL branches (stage 1+)
-            weight = 1.0 if trace_info['stage'] == 0 else 1.1
-            weights.append(weight)
+        # Normalize answers before voting
+        normalized_answers = [normalize_answer(str(ans)) for ans in all_answers]
+        valid_answers = [ans for ans in normalized_answers if ans != 'Invalid']
 
-        # Calculate weighted vote with normalized answers
-        from collections import Counter
-        weighted_counts = Counter()
-        for ans, w in zip(weighted_answers, weights):
-            # Normalize answer before counting
-            normalized = normalize_answer(str(ans))
-            if normalized != 'Invalid':
-                weighted_counts[normalized] += w
-
-        voted_answer = weighted_counts.most_common(1)[0][0] if weighted_counts else None
-        vote_distribution = dict(weighted_counts)
+        if valid_answers:
+            vote_counts = Counter(valid_answers)
+            voted_answer = vote_counts.most_common(1)[0][0]
+            vote_distribution = dict(vote_counts)
+        else:
+            voted_answer = None
+            vote_distribution = {}
     else:
         voted_answer = None
         vote_distribution = {}
@@ -366,7 +355,7 @@ def process_question_peak_branching(
 
 
 def process_question_branching(
-    deep_llm: DeepThinkLLM,
+    deep_llm: SCLLM,
     question: str,
     ground_truth: str,
     start_traces: int,
@@ -413,8 +402,7 @@ def process_question_branching(
         branch_goal=branch_goal,
         average_tokens=average_tokens,
         window_size=2048,
-        sampling_params=sampling_params,
-        compute_multiple_voting=False
+        sampling_params=sampling_params
     )
 
     # Extract answers from all traces
@@ -690,8 +678,8 @@ def main():
     datasets = load_dataset_by_name(args.dataset, split="test")
 
     # Initialize model
-    print(f"\nInitializing DeepThinkLLM with {args.model}...")
-    deep_llm = DeepThinkLLM(
+    print(f"\nInitializing SCLLM with {args.model}...")
+    deep_llm = SCLLM(
         model=args.model,
         tensor_parallel_size=args.tensor_parallel_size,
         enable_prefix_caching=True,
