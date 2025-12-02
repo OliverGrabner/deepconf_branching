@@ -68,11 +68,13 @@ class BranchingManager:
         Args:
             start_traces: Number of initial traces
             max_traces: Maximum allowed traces
-            selected_percent: Top % of traces eligible for branching (e.g., 0.60 = top 60%)
+            selected_percent: DEPRECATED - kept for backward compatibility, not used
             n_iterations: Number of check points for branching decisions
             branch_goal: Target completion percentage for branching (e.g., 0.75 = 75%)
             average_tokens: Historical average tokens for this problem
             tail_window: Number of tokens for tail confidence computation
+
+        Note: Branch selection is now random from all active traces.
         """
         self.start_traces = start_traces
         self.max_traces = max_traces
@@ -100,7 +102,7 @@ class BranchingManager:
         print(f"Stride: {self.stride} tokens, Iterations: {n_iterations}")
         print(f"Branches needed: {self.branches_needed}, Per iteration: {self.branches_per_iteration}")
         print(f"Branch deadline: {self.branch_deadline_tokens} tokens")
-        print(f"Top {selected_percent*100:.0f}% eligible for branching")
+        print(f"Branch selection: RANDOM (from all active traces)")
         print("="*40)
 
     def initialize_traces(self, num_traces: int) -> List[TraceState]:
@@ -137,34 +139,22 @@ class BranchingManager:
 
         return True
 
-    def select_branch_candidates(self) -> List[Tuple[int, float]]:
+    def select_branch_candidates(self) -> List[int]:
         """
-        Select traces eligible for branching based on tail confidence
+        Get all active trace indices as candidates for branching
+        (random selection - no confidence filtering)
 
         Returns:
-            List of (trace_idx, tail_confidence) tuples for top percent of traces
+            List of all active trace indices
         """
-        # Compute tail confidence for all active traces
-        traces_with_conf = []
-        for trace in self.active_traces:
-            tail_conf = trace.get_tail_confidence(self.tail_window)
-            traces_with_conf.append((trace.trace_idx, tail_conf))
+        return [trace.trace_idx for trace in self.active_traces]
 
-        # Sort by confidence (descending)
-        sorted_traces = sorted(traces_with_conf, key=lambda x: x[1], reverse=True)
-
-        # Select top percent
-        n_candidates = max(1, int(len(sorted_traces) * self.selected_percent))
-        candidates = sorted_traces[:n_candidates]
-
-        return candidates
-
-    def select_branches_to_create(self, candidates: List[Tuple[int, float]]) -> List[int]:
+    def select_branches_to_create(self, candidates: List[int]) -> List[int]:
         """
-        Uniformly sample from candidates to decide which traces to branch
+        Randomly select traces to branch from all candidates
 
         Args:
-            candidates: List of (trace_idx, confidence) tuples
+            candidates: List of trace indices (all active traces)
 
         Returns:
             List of trace indices to branch (may contain duplicates)
@@ -182,11 +172,10 @@ class BranchingManager:
         if branches_to_create <= 0:
             return []
 
-        # Uniformly sample from candidates (with replacement)
-        candidate_indices = [idx for idx, _ in candidates]
+        # Random selection from ALL candidates
         selected = np.random.choice(
-            candidate_indices,
-            size=min(branches_to_create, len(candidate_indices)),
+            candidates,
+            size=min(branches_to_create, len(candidates)),
             replace=True  # Allow same trace to be branched multiple times
         )
 

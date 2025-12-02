@@ -339,9 +339,9 @@ class SCLLM:
             if manager.should_branch():
                 print(f"  Evaluating branching candidates...")
 
-                # Select candidates based on tail confidence
+                # Get all active traces as candidates (random selection)
                 candidates = manager.select_branch_candidates()
-                print(f"    Top {selected_percent*100:.0f}% candidates: {len(candidates)}")
+                print(f"    All traces as candidates: {len(candidates)}")
 
                 # Select which traces to branch
                 branches_to_create = manager.select_branches_to_create(candidates)
